@@ -1,0 +1,100 @@
+@import "tailwindcss";
+
+@theme {
+  --font-display: "Barlow Condensed", sans-serif;
+  --font-sans: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: "JetBrains Mono", monospace;
+}
+
+:root {
+  --zorb-accent: #FF1744;
+  --zorb-accent-rgb: 255, 23, 68;
+  --zorb-bg: #000000;
+  --zorb-surface: #121212;
+  --zorb-surface-elevated: #181818;
+}
+
+html,
+body {
+  background-color: #000000;
+  color: #ffffff;
+  font-family: var(--font-sans);
+  overflow-x: hidden;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.font-display {
+  font-family: var(--font-display);
+}
+
+.font-mono-tabular {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* Lightweight Spotify-style skeleton shimmer */
+@keyframes zorb-shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+.zorb-skeleton {
+  background: linear-gradient(90deg, #121212 25%, #1e1e1e 50%, #121212 75%);
+  background-size: 200% 100%;
+  animation: zorb-shimmer 1.4s ease-in-out infinite;
+}
+
+@keyframes zorb-heart-pop {
+  0% {
+    transform: scale(1);
+  }
+  40% {
+    transform: scale(1.32);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+.animate-zorb-heart-pop {
+  animation: zorb-heart-pop 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes zorb-eq {
+  0%,
+  100% {
+    transform: scaleY(0.28);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+.zorb-eq-bar {
+  transform-origin: bottom;
+  animation: zorb-eq 0.78s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .zorb-skeleton,
+  .animate-zorb-heart-pop,
+  .zorb-eq-bar {
+    animation: none !important;
+  }
+}

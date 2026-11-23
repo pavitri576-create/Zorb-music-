@@ -1,0 +1,6 @@
+{
+  "name": "ZORB",
+  "description": "Z = M × D² — Minimal luxury phonk music & dopamine streak experience.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
