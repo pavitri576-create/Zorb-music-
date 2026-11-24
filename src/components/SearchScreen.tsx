@@ -14,7 +14,7 @@ interface SearchScreenProps {
   currentSong: Song | null;
   isPlaying: boolean;
   accentHex: string;
-  onPlaySong: (song: Song) => void;
+  onPlaySong: (song: Song, queue?: Song[]) => void;
   onPlayNext: (song: Song) => void;
   onToggleExcludeShuffle: (songId: string) => void;
   onTogglePlay: () => void;
@@ -223,7 +223,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
                       if (active) {
                         onTogglePlay();
                       } else {
-                        onPlaySong(song);
+                        onPlaySong(song, matchingSongs);
                       }
                     }}
                     className="flex items-center gap-3 min-w-0 flex-1 text-left cursor-pointer"

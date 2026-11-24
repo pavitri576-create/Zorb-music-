@@ -58,6 +58,7 @@ import {
   setHapticsEnabled,
 } from './utils/haptics';
 import {
+  resolveMediaArtwork,
   updateMediaSessionMetadata,
   updateMediaSessionPositionAndState,
 } from './utils/mediaNotification';
@@ -81,6 +82,21 @@ import { OfflineGateModal } from './components/OfflineGateModal';
 import { DemoAdPlayerModal } from './components/DemoAdPlayerModal';
 import { PuzzlePieceIcon, ZorbLogo } from './components/ZorbLogo';
 
+function isSongPlayableOfflineSync(
+  song: Song,
+  offlineIds: string[],
+  cachedUrls: Set<string>
+): boolean {
+  return (
+    song.id.startsWith('custom-') ||
+    song.id.startsWith('beat-') ||
+    song.audioUrl.startsWith('blob:') ||
+    song.audioUrl.startsWith('data:') ||
+    offlineIds.includes(song.id) ||
+    cachedUrls.has(song.audioUrl)
+  );
+}
+
 export default function App() {
   const [state, setState] = useState<ZorbPersistedState>(() => loadPersistedState());
   const [showSplash, setShowSplash] = useState(true);
@@ -95,6 +111,7 @@ export default function App() {
 
   // Playback state
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const preloadAudioRef = useRef<HTMLAudioElement | null>(null);
   const [currentSong, setCurrentSong] = useState<Song | null>(() => {
     const initial = loadPersistedState();
     return INITIAL_SONGS.find((s) => s.id === initial.lastPlayedSongId) || null;
@@ -104,6 +121,7 @@ export default function App() {
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [shuffle, setShuffle] = useState(false);
+  const [shuffledNextId, setShuffledNextId] = useState<string | null>(null);
   const [repeatMode, setRepeatMode] = useState<RepeatMode>('off');
   const [speedMode, setSpeedMode] = useState<AudioSpeedMode>('normal');
   const [eqPreset, setEqPreset] = useState<EqPresetId>('flat');
@@ -133,6 +151,7 @@ export default function App() {
   );
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
   const [customTracksLoaded, setCustomTracksLoaded] = useState(false);
+  const [cachedUrlsVersion, setCachedUrlsVersion] = useState(0);
 
   const lastTickTimeRef = useRef<number>(0);
   const dismissedOfflinePromptRef = useRef<boolean>(false);
@@ -140,6 +159,18 @@ export default function App() {
   const prevOfflinePassActiveRef = useRef<boolean>(false);
   const crossfadeTriggeredRef = useRef<boolean>(false);
   const fadeInTimerRef = useRef<number | null>(null);
+  const cachedUrlsRef = useRef<Set<string>>(new Set());
+  const shufflePlayedIdsRef = useRef<Set<string>>(new Set());
+  const preloadedSongIdRef = useRef<string | null>(null);
+  const pendingInterstitialAdRef = useRef<boolean>(false);
+  const switchingTrackRef = useRef<boolean>(false);
+  const audioHandlersRef = useRef<{
+    onEnded: () => void;
+    onTimeUpdate: () => void;
+  }>({
+    onEnded: () => undefined,
+    onTimeUpdate: () => undefined,
+  });
   const currentTheme = useMemo(() => getThemeById(state.themeId), [state.themeId]);
 
   const usedImportSlots = useMemo(
@@ -293,11 +324,45 @@ export default function App() {
     document.documentElement.style.setProperty('--zorb-accent-rgb', currentTheme.rgb);
   }, [currentTheme]);
 
-  // Listen to visibilitychange to surface top Live Pill mini-player when minimized/backgrounded
+  // Keep synchronous index of CacheStorage offline audio URLs so background onended never awaits
+  useEffect(() => {
+    let cancelled = false;
+    const syncOfflineCache = async () => {
+      try {
+        if (typeof window === 'undefined' || !('caches' in window)) return;
+        const nextSet = new Set<string>();
+        await Promise.all(
+          allSongs.map(async (s) => {
+            if (s.audioUrl.startsWith('blob:') || s.audioUrl.startsWith('data:')) {
+              nextSet.add(s.audioUrl);
+              return;
+            }
+            const ok = await isUrlCachedOffline(s.audioUrl);
+            if (ok) nextSet.add(s.audioUrl);
+          })
+        );
+        if (!cancelled) {
+          cachedUrlsRef.current = nextSet;
+          setCachedUrlsVersion((v) => v + 1);
+        }
+      } catch {
+        // Ignore cache lookup failure
+      }
+    };
+    void syncOfflineCache();
+    return () => {
+      cancelled = true;
+    };
+  }, [allSongs, state.offlineSongIds]);
+
+  // Listen to visibilitychange to surface top Live Pill mini-player & deferred foreground ad check
   useEffect(() => {
     const onVisibility = () => {
       if (document.hidden && currentSong) {
         setShowSystemBar(true);
+      } else if (!document.hidden && pendingInterstitialAdRef.current) {
+        pendingInterstitialAdRef.current = false;
+        setAdModalOpen(true);
       }
     };
     document.addEventListener('visibilitychange', onVisibility);
@@ -320,7 +385,7 @@ export default function App() {
     }));
   }, []);
 
-  // Offline Ads counter (triggers 1 interstitial after every 6 completed tracks, unless Ad-Skip Shield is active)
+  // Offline Ads counter: never interrupts/pauses playback when minimized or screen-locked
   const registerCompletedSongForAd = useCallback(() => {
     setState((prev) => {
       const nextCount = (prev.songsPlayedSinceAd || 0) + 1;
@@ -333,13 +398,20 @@ export default function App() {
             songsPlayedSinceAd: 0,
           };
         }
+        if (typeof document !== 'undefined' && document.hidden) {
+          pendingInterstitialAdRef.current = true;
+          return {
+            ...prev,
+            songsPlayedSinceAd: 0,
+          };
+        }
         setTimeout(() => {
-          if (audioRef.current && !audioRef.current.paused) {
-            audioRef.current.pause();
-          }
-          setIsPlaying(false);
           setAdModalOpen(true);
         }, 40);
+        return {
+          ...prev,
+          songsPlayedSinceAd: 0,
+        };
       }
       return {
         ...prev,
@@ -404,88 +476,228 @@ export default function App() {
     }
   }, [showSplash, onboardingDone, state.hasOnboarded, state.hasPromptedMusicScan, customTracksLoaded, offlineGateMode, handleScanFiles]);
 
+  // Compute ordered Up Next list deterministically so UI, 5s preloader, and Auto-Next always match
+  const upNextSongs = useMemo<Song[]>(() => {
+    void cachedUrlsVersion;
+    if (queue.length === 0) return [];
+    const filterPlayable = (list: Song[]) =>
+      isOnline
+        ? list
+        : list.filter((s) =>
+            isSongPlayableOfflineSync(s, state.offlineSongIds, cachedUrlsRef.current)
+          );
+
+    if (!shuffle) {
+      const idx = currentSong ? queue.findIndex((s) => s.id === currentSong.id) : -1;
+      const after = idx >= 0 ? queue.slice(idx + 1) : queue;
+      const before = idx > 0 && repeatMode === 'all' ? queue.slice(0, idx) : [];
+      return filterPlayable([...after, ...before]);
+    }
+
+    const excluded = state.excludedShuffleSongIds || [];
+    const playableOthers = filterPlayable(
+      queue.filter((s) => !currentSong || s.id !== currentSong.id)
+    );
+    const preferred = playableOthers.filter((s) => !excluded.includes(s.id));
+    const pool = preferred.length > 0 ? preferred : playableOthers;
+    const unplayed = pool.filter((s) => !shufflePlayedIdsRef.current.has(s.id));
+    const candidatePool =
+      unplayed.length > 0 ? unplayed : repeatMode === 'all' ? pool : [];
+
+    if (candidatePool.length === 0) return [];
+    if (shuffledNextId) {
+      const picked = candidatePool.find((s) => s.id === shuffledNextId);
+      if (picked) {
+        return [picked, ...candidatePool.filter((s) => s.id !== picked.id)];
+      }
+    }
+    return candidatePool;
+  }, [
+    cachedUrlsVersion,
+    currentSong,
+    isOnline,
+    queue,
+    repeatMode,
+    shuffle,
+    shuffledNextId,
+    state.excludedShuffleSongIds,
+    state.offlineSongIds,
+  ]);
+
+  const upNextSong = upNextSongs[0] || null;
+
+  // Keep shuffledNextId synchronized with eligible Up Next pool
+  useEffect(() => {
+    if (!shuffle) {
+      if (shuffledNextId !== null) setShuffledNextId(null);
+      return;
+    }
+    if (upNextSongs.length === 0) {
+      if (shuffledNextId !== null) setShuffledNextId(null);
+      return;
+    }
+    if (!shuffledNextId || !upNextSongs.some((s) => s.id === shuffledNextId)) {
+      const randomPick = upNextSongs[Math.floor(Math.random() * upNextSongs.length)];
+      setShuffledNextId(randomPick.id);
+    }
+  }, [shuffle, shuffledNextId, upNextSongs]);
+
+  // Snapshot ref so audio event callbacks never suffer stale closures when backgrounded
+  const playbackSnapshotRef = useRef({
+    currentSong,
+    queue,
+    upNextSong,
+    upNextSongs,
+    shuffle,
+    repeatMode,
+    speedMode,
+    isOnline,
+    offlineSongIds: state.offlineSongIds,
+    excludedShuffleSongIds: state.excludedShuffleSongIds || [],
+    sleepTimerMode,
+    crossfadeSeconds: state.crossfadeSeconds || 0,
+    loopA,
+    loopB,
+  });
+  playbackSnapshotRef.current = {
+    currentSong,
+    queue,
+    upNextSong,
+    upNextSongs,
+    shuffle,
+    repeatMode,
+    speedMode,
+    isOnline,
+    offlineSongIds: state.offlineSongIds,
+    excludedShuffleSongIds: state.excludedShuffleSongIds || [],
+    sleepTimerMode,
+    crossfadeSeconds: state.crossfadeSeconds || 0,
+    loopA,
+    loopB,
+  };
+
   const playSong = useCallback(
-    async (song: Song, customQueue?: Song[], options?: { fadeInSeconds?: number }) => {
-      if (customQueue) setQueue(customQueue);
+    (
+      song: Song,
+      customQueue?: Song[],
+      options?: { fadeInSeconds?: number; restartIfSame?: boolean }
+    ) => {
+      if (customQueue) {
+        setQueue(customQueue);
+        playbackSnapshotRef.current.queue = customQueue;
+        shufflePlayedIdsRef.current = new Set([song.id]);
+      } else {
+        shufflePlayedIdsRef.current.add(song.id);
+      }
+
       const audio = audioRef.current;
       if (!audio) return;
 
-      const isLocalTrack =
-        song.id.startsWith('custom-') ||
-        song.id.startsWith('beat-') ||
-        state.offlineSongIds.includes(song.id);
+      const onlineNow = typeof navigator !== 'undefined' ? navigator.onLine : isOnline;
+      const playableSync =
+        onlineNow ||
+        isSongPlayableOfflineSync(song, playbackSnapshotRef.current.offlineSongIds, cachedUrlsRef.current);
 
-      if (!isOnline && !isLocalTrack) {
-        const cached = await isUrlCachedOffline(song.audioUrl);
+      const startPlaybackSync = () => {
+        if (fadeInTimerRef.current !== null) {
+          window.clearInterval(fadeInTimerRef.current);
+          fadeInTimerRef.current = null;
+        }
+
+        const isSameSong = playbackSnapshotRef.current.currentSong?.id === song.id;
+        playbackSnapshotRef.current.currentSong = song;
+        setCurrentSong(song);
+        preloadedSongIdRef.current = null;
+
+        if (!isSameSong || options?.restartIfSame) {
+          setLoopA(null);
+          setLoopB(null);
+          crossfadeTriggeredRef.current = false;
+          switchingTrackRef.current = true;
+          if (!isSameSong || audio.src !== song.audioUrl) {
+            audio.src = song.audioUrl;
+          }
+          audio.currentTime = 0;
+          setCurrentTime(0);
+          lastTickTimeRef.current = 0;
+          applyPlaybackSpeed(audio, playbackSnapshotRef.current.speedMode);
+        }
+
+        const fadeSec = options?.fadeInSeconds || 0;
+        if (fadeSec > 0 && (!isSameSong || options?.restartIfSame)) {
+          audio.volume = 0.08;
+        } else {
+          audio.volume = 1;
+        }
+
+        const rate =
+          playbackSnapshotRef.current.speedMode === 'slowed'
+            ? 0.85
+            : playbackSnapshotRef.current.speedMode === 'sped'
+            ? 1.15
+            : 1;
+        void updateMediaSessionMetadata(song);
+        updateMediaSessionPositionAndState(true, song.duration, 0, rate);
+
+        audio
+          .play()
+          .then(() => {
+            switchingTrackRef.current = false;
+            setIsPlaying(true);
+            recordHistory(song.id);
+            const activeDur = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : song.duration;
+            updateMediaSessionPositionAndState(true, activeDur, audio.currentTime, rate);
+            if (fadeSec > 0 && (!isSameSong || options?.restartIfSame)) {
+              const steps = Math.max(8, Math.round(fadeSec * 16));
+              let step = 0;
+              fadeInTimerRef.current = window.setInterval(() => {
+                step += 1;
+                if (!audioRef.current) {
+                  if (fadeInTimerRef.current !== null) {
+                    window.clearInterval(fadeInTimerRef.current);
+                    fadeInTimerRef.current = null;
+                  }
+                  return;
+                }
+                const nextVol = Math.min(1, 0.08 + (0.92 * step) / steps);
+                audioRef.current.volume = nextVol;
+                if (step >= steps) {
+                  if (fadeInTimerRef.current !== null) {
+                    window.clearInterval(fadeInTimerRef.current);
+                    fadeInTimerRef.current = null;
+                  }
+                }
+              }, Math.round((fadeSec * 1000) / steps));
+            }
+          })
+          .catch(() => {
+            switchingTrackRef.current = false;
+            audio.volume = 1;
+            setIsPlaying(false);
+            if (!navigator.onLine) {
+              hapticError();
+              showToast('Offline - Saved songs only');
+            }
+          });
+      };
+
+      if (playableSync) {
+        startPlaybackSync();
+        return;
+      }
+
+      // Async CacheStorage fallback only if user manually taps an unindexed track while offline
+      void isUrlCachedOffline(song.audioUrl).then((cached) => {
         if (!cached) {
           hapticError();
           showToast('Offline - Saved songs only');
           return;
         }
-      }
-
-      if (fadeInTimerRef.current !== null) {
-        window.clearInterval(fadeInTimerRef.current);
-        fadeInTimerRef.current = null;
-      }
-
-      const isSameSong = currentSong?.id === song.id;
-      setCurrentSong(song);
-      if (!isSameSong) {
-        setLoopA(null);
-        setLoopB(null);
-        crossfadeTriggeredRef.current = false;
-        audio.src = song.audioUrl;
-        audio.currentTime = 0;
-        setCurrentTime(0);
-        lastTickTimeRef.current = 0;
-      }
-
-      const fadeSec = options?.fadeInSeconds || 0;
-      if (fadeSec > 0 && !isSameSong) {
-        audio.volume = 0.08;
-      } else {
-        audio.volume = 1;
-      }
-
-      audio
-        .play()
-        .then(() => {
-          setIsPlaying(true);
-          recordHistory(song.id);
-          if (fadeSec > 0 && !isSameSong) {
-            const steps = Math.max(8, Math.round(fadeSec * 16));
-            let step = 0;
-            fadeInTimerRef.current = window.setInterval(() => {
-              step += 1;
-              if (!audioRef.current) {
-                if (fadeInTimerRef.current !== null) {
-                  window.clearInterval(fadeInTimerRef.current);
-                  fadeInTimerRef.current = null;
-                }
-                return;
-              }
-              const nextVol = Math.min(1, 0.08 + (0.92 * step) / steps);
-              audioRef.current.volume = nextVol;
-              if (step >= steps) {
-                if (fadeInTimerRef.current !== null) {
-                  window.clearInterval(fadeInTimerRef.current);
-                  fadeInTimerRef.current = null;
-                }
-              }
-            }, Math.round((fadeSec * 1000) / steps));
-          }
-        })
-        .catch(() => {
-          audio.volume = 1;
-          setIsPlaying(false);
-          if (!navigator.onLine) {
-            hapticError();
-            showToast('Offline - Saved songs only');
-          }
-        });
+        cachedUrlsRef.current.add(song.audioUrl);
+        startPlaybackSync();
+      });
     },
-    [currentSong, isOnline, recordHistory, showToast, state.offlineSongIds]
+    [isOnline, recordHistory, showToast]
   );
 
   const togglePlay = useCallback(() => {
@@ -511,29 +723,97 @@ export default function App() {
   }, [currentSong, isPlaying, playSong]);
 
   const handleNext = useCallback(
-    (fadeInSeconds = 0) => {
-      if (queue.length === 0) return;
-      hapticSkip();
-      if (!currentSong) {
-        playSong(queue[0], undefined, fadeInSeconds > 0 ? { fadeInSeconds } : undefined);
-        return;
+    (fadeInSeconds = 0, autoEnded = false) => {
+      const snap = playbackSnapshotRef.current;
+      if (snap.queue.length === 0) return false;
+      if (!autoEnded) hapticSkip();
+
+      if (!snap.currentSong) {
+        const firstPlayable =
+          snap.isOnline
+            ? snap.queue[0]
+            : snap.queue.find((s) =>
+                isSongPlayableOfflineSync(s, snap.offlineSongIds, cachedUrlsRef.current)
+              );
+        if (!firstPlayable) return false;
+        playSong(firstPlayable, undefined, fadeInSeconds > 0 ? { fadeInSeconds } : undefined);
+        return true;
       }
-      if (shuffle && queue.length > 1) {
-        const excluded = state.excludedShuffleSongIds || [];
-        const preferred = queue.filter(
-          (s) => s.id !== currentSong.id && !excluded.includes(s.id)
+
+      // If autoEnded with Repeat One, replay current track seamlessly
+      if (autoEnded && snap.repeatMode === 'one') {
+        playSong(snap.currentSong, undefined, { restartIfSame: true });
+        return true;
+      }
+
+      // Pick deterministic Up Next song
+      let nextCandidate: Song | null = snap.upNextSong;
+
+      // On manual skip when at end of queue with Repeat OFF, wrap to first playable song for smooth button UX
+      if (!nextCandidate && !autoEnded) {
+        const pool = snap.isOnline
+          ? snap.queue
+          : snap.queue.filter((s) =>
+              isSongPlayableOfflineSync(s, snap.offlineSongIds, cachedUrlsRef.current)
+            );
+        if (snap.shuffle && pool.length > 1) {
+          const others = pool.filter((s) => s.id !== snap.currentSong?.id);
+          shufflePlayedIdsRef.current = new Set([snap.currentSong.id]);
+          nextCandidate = others[Math.floor(Math.random() * others.length)] || pool[0] || null;
+        } else {
+          const idx = snap.queue.findIndex((s) => s.id === snap.currentSong?.id);
+          const wrapped = idx >= 0 ? [...snap.queue.slice(idx + 1), ...snap.queue.slice(0, idx)] : snap.queue;
+          const playableWrapped = snap.isOnline
+            ? wrapped
+            : wrapped.filter((s) =>
+                isSongPlayableOfflineSync(s, snap.offlineSongIds, cachedUrlsRef.current)
+              );
+          nextCandidate = playableWrapped[0] || pool[0] || null;
+        }
+      }
+
+      if (!nextCandidate) {
+        return false;
+      }
+
+      // Pre-roll next shuffle ID so Up Next updates immediately without flicker
+      if (snap.shuffle) {
+        shufflePlayedIdsRef.current.add(nextCandidate.id);
+        const excluded = snap.excludedShuffleSongIds;
+        const remaining = snap.queue.filter(
+          (s) =>
+            s.id !== nextCandidate!.id &&
+            !shufflePlayedIdsRef.current.has(s.id) &&
+            !excluded.includes(s.id) &&
+            (snap.isOnline || isSongPlayableOfflineSync(s, snap.offlineSongIds, cachedUrlsRef.current))
         );
-        const candidates =
-          preferred.length > 0 ? preferred : queue.filter((s) => s.id !== currentSong.id);
-        const pick = candidates[Math.floor(Math.random() * candidates.length)];
-        playSong(pick, undefined, fadeInSeconds > 0 ? { fadeInSeconds } : undefined);
-        return;
+        if (remaining.length > 0) {
+          setShuffledNextId(remaining[Math.floor(Math.random() * remaining.length)].id);
+        } else if (snap.repeatMode === 'all') {
+          shufflePlayedIdsRef.current = new Set([nextCandidate.id]);
+          const resetPool = snap.queue.filter(
+            (s) =>
+              s.id !== nextCandidate!.id &&
+              !excluded.includes(s.id) &&
+              (snap.isOnline || isSongPlayableOfflineSync(s, snap.offlineSongIds, cachedUrlsRef.current))
+          );
+          setShuffledNextId(
+            resetPool.length > 0
+              ? resetPool[Math.floor(Math.random() * resetPool.length)].id
+              : null
+          );
+        } else {
+          setShuffledNextId(null);
+        }
       }
-      const idx = queue.findIndex((s) => s.id === currentSong.id);
-      const nextIdx = (idx + 1) % queue.length;
-      playSong(queue[nextIdx], undefined, fadeInSeconds > 0 ? { fadeInSeconds } : undefined);
+
+      playSong(nextCandidate, undefined, {
+        ...(fadeInSeconds > 0 ? { fadeInSeconds } : {}),
+        restartIfSame: nextCandidate.id === snap.currentSong.id,
+      });
+      return true;
     },
-    [queue, currentSong, shuffle, state.excludedShuffleSongIds, playSong]
+    [playSong]
   );
 
   const handlePrev = useCallback(() => {
@@ -541,19 +821,29 @@ export default function App() {
     hapticSkip();
     if (audio && audio.currentTime > 3) {
       audio.currentTime = 0;
-      setCurrentTime(0);
       lastTickTimeRef.current = 0;
+      setCurrentTime(0);
       return;
     }
-    if (queue.length === 0) return;
-    if (!currentSong) {
-      playSong(queue[0]);
+    const snap = playbackSnapshotRef.current;
+    if (snap.queue.length === 0) return;
+    if (!snap.currentSong) {
+      playSong(snap.queue[0]);
       return;
     }
-    const idx = queue.findIndex((s) => s.id === currentSong.id);
-    const prevIdx = (idx - 1 + queue.length) % queue.length;
-    playSong(queue[prevIdx]);
-  }, [queue, currentSong, playSong]);
+    const idx = snap.queue.findIndex((s) => s.id === snap.currentSong?.id);
+    for (let step = 1; step <= snap.queue.length; step++) {
+      const prevIdx = (idx - step + snap.queue.length) % snap.queue.length;
+      const candidate = snap.queue[prevIdx];
+      if (
+        snap.isOnline ||
+        isSongPlayableOfflineSync(candidate, snap.offlineSongIds, cachedUrlsRef.current)
+      ) {
+        playSong(candidate, undefined, { restartIfSame: candidate.id === snap.currentSong.id });
+        return;
+      }
+    }
+  }, [playSong]);
 
   const handleSeek = useCallback((time: number) => {
     const audio = audioRef.current;
@@ -837,13 +1127,14 @@ export default function App() {
   const handleAudioTimeUpdate = () => {
     const audio = audioRef.current;
     if (!audio) return;
+    const snap = playbackSnapshotRef.current;
     const now = audio.currentTime;
 
     // A-B Drop Looper check
-    if (loopA !== null && loopB !== null && loopB > loopA + 0.2 && now >= loopB) {
-      audio.currentTime = loopA;
-      lastTickTimeRef.current = loopA;
-      setCurrentTime(loopA);
+    if (snap.loopA !== null && snap.loopB !== null && snap.loopB > snap.loopA + 0.2 && now >= snap.loopB) {
+      audio.currentTime = snap.loopA;
+      lastTickTimeRef.current = snap.loopA;
+      setCurrentTime(snap.loopA);
       return;
     }
 
@@ -858,41 +1149,57 @@ export default function App() {
       lastTickTimeRef.current = now;
     }
 
-    // Smooth Crossfade handoff (0-6s)
-    const cfSec = state.crossfadeSeconds || 0;
-    const loopActive = loopA !== null && loopB !== null && loopB > loopA;
     const trackDur = audio.duration;
+
+    // Preload next song 5 seconds before current track ends for zero-gap transition
+    const upcoming = snap.upNextSong;
+    if (
+      upcoming &&
+      snap.repeatMode !== 'one' &&
+      Number.isFinite(trackDur) &&
+      trackDur > 5 &&
+      trackDur - now <= 5.2 &&
+      trackDur - now > 0.15 &&
+      preloadedSongIdRef.current !== upcoming.id
+    ) {
+      preloadedSongIdRef.current = upcoming.id;
+      const preAudio = preloadAudioRef.current;
+      if (preAudio && preAudio.src !== upcoming.audioUrl) {
+        preAudio.src = upcoming.audioUrl;
+        preAudio.load();
+      }
+      void resolveMediaArtwork(upcoming.cover);
+    }
+
+    // Smooth Crossfade handoff (0-6s) when there IS an upcoming song
+    const cfSec = snap.crossfadeSeconds || 0;
+    const loopActive = snap.loopA !== null && snap.loopB !== null && snap.loopB > snap.loopA;
     if (
       cfSec > 0 &&
       !loopActive &&
-      repeatMode !== 'one' &&
-      sleepTimerMode !== 'end-of-track' &&
+      snap.repeatMode !== 'one' &&
+      snap.sleepTimerMode !== 'end-of-track' &&
+      Boolean(upcoming) &&
       Number.isFinite(trackDur) &&
       trackDur > cfSec + 3 &&
-      queue.length > 1
+      snap.queue.length > 1
     ) {
       const remaining = trackDur - now;
       if (remaining <= cfSec && remaining > 0) {
         audio.volume = Math.max(0.05, Math.min(1, remaining / cfSec));
         if (remaining <= 0.2 && !crossfadeTriggeredRef.current) {
-          crossfadeTriggeredRef.current = true;
-          setState((prev) => ({
-            ...prev,
-            dopamineScore: prev.dopamineScore + 10,
-          }));
-          creditListenSeconds(60);
-          setDopamineGainToast(10);
-          setTimeout(() => setDopamineGainToast(null), 2200);
-
-          const willTriggerAd =
-            (state.songsPlayedSinceAd || 0) + 1 >= 6 && (state.adSkipShields || 0) === 0;
-          registerCompletedSongForAd();
-          if (willTriggerAd) {
-            setIsPlaying(false);
-            audio.volume = 1;
-            return;
+          const started = handleNext(Math.min(cfSec, 2.5), true);
+          if (started) {
+            crossfadeTriggeredRef.current = true;
+            setState((prev) => ({
+              ...prev,
+              dopamineScore: prev.dopamineScore + 10,
+            }));
+            creditListenSeconds(60);
+            setDopamineGainToast(10);
+            setTimeout(() => setDopamineGainToast(null), 2200);
+            registerCompletedSongForAd();
           }
-          handleNext(Math.min(cfSec, 2.5));
         }
       } else if (fadeInTimerRef.current === null && audio.volume < 1) {
         audio.volume = 1;
@@ -903,13 +1210,16 @@ export default function App() {
   };
 
   const handleAudioEnded = () => {
-    if (audioRef.current) {
-      audioRef.current.volume = 1;
+    const audio = audioRef.current;
+    if (audio) {
+      audio.volume = 1;
     }
     if (crossfadeTriggeredRef.current) {
       crossfadeTriggeredRef.current = false;
       return;
     }
+
+    const snap = playbackSnapshotRef.current;
 
     // Song finished: Dopamine +10 animation & Streak time +1 min bonus
     setState((prev) => ({
@@ -920,27 +1230,30 @@ export default function App() {
     setDopamineGainToast(10);
     setTimeout(() => setDopamineGainToast(null), 2200);
 
-    if (sleepTimerMode === 'end-of-track') {
+    if (snap.sleepTimerMode === 'end-of-track') {
       setSleepTimerMode('off');
       setIsPlaying(false);
+      const d = audio && Number.isFinite(audio.duration) ? audio.duration : snap.currentSong?.duration || 0;
+      updateMediaSessionPositionAndState(false, d, d, 1);
       showToast('Sleep timer stopped after track');
       return;
     }
 
-    const willTriggerAd =
-      (state.songsPlayedSinceAd || 0) + 1 >= 6 && (state.adSkipShields || 0) === 0;
     registerCompletedSongForAd();
-    if (willTriggerAd) {
-      setIsPlaying(false);
-      return;
-    }
 
-    if (repeatMode === 'one' && audioRef.current) {
-      audioRef.current.currentTime = 0;
-      audioRef.current.play().catch(() => undefined);
-      return;
+    // Auto-Next / Repeat One / Stop at end if Repeat Off
+    const started = handleNext(0, true);
+    if (!started) {
+      setIsPlaying(false);
+      const d = audio && Number.isFinite(audio.duration) ? audio.duration : snap.currentSong?.duration || 0;
+      const rate = snap.speedMode === 'slowed' ? 0.85 : snap.speedMode === 'sped' ? 1.15 : 1;
+      updateMediaSessionPositionAndState(false, d, d, rate);
     }
-    handleNext();
+  };
+
+  audioHandlersRef.current = {
+    onEnded: handleAudioEnded,
+    onTimeUpdate: handleAudioTimeUpdate,
   };
 
   // Likes, Playlists, Offline, Share
@@ -962,6 +1275,8 @@ export default function App() {
     const exists = state.offlineSongIds.includes(song.id);
     if (exists) {
       await removeSongOfflineCache(song.audioUrl);
+      cachedUrlsRef.current.delete(song.audioUrl);
+      setCachedUrlsVersion((v) => v + 1);
       setState((prev) => ({
         ...prev,
         offlineSongIds: prev.offlineSongIds.filter((id) => id !== song.id),
@@ -969,6 +1284,10 @@ export default function App() {
       showToast(`Removed offline copy of ${song.title}`);
     } else {
       const ok = await cacheSongOffline(song.audioUrl);
+      if (ok) {
+        cachedUrlsRef.current.add(song.audioUrl);
+        setCachedUrlsVersion((v) => v + 1);
+      }
       setState((prev) => ({
         ...prev,
         offlineSongIds: [...prev.offlineSongIds, song.id],
@@ -995,9 +1314,14 @@ export default function App() {
         if (curIdx === -1) return [song, ...filtered];
         return [...filtered.slice(0, curIdx + 1), song, ...filtered.slice(curIdx + 1)];
       });
+      if (shuffle) {
+        shufflePlayedIdsRef.current.delete(song.id);
+        setShuffledNextId(song.id);
+      }
+      preloadedSongIdRef.current = null;
       showToast(`Playing next: ${song.title}`);
     },
-    [allSongs, currentSong, playSong, showToast]
+    [allSongs, currentSong, playSong, showToast, shuffle]
   );
 
   const handleMoveQueueItem = useCallback((index: number, direction: -1 | 1) => {
@@ -1620,24 +1944,42 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-black text-white flex flex-col lg:flex-row">
-      {/* Hidden Persistent HTML5 Audio Element */}
+      {/* Hidden Persistent HTML5 Audio Element (Never recreated on song change) */}
       <audio
         ref={audioRef}
-        preload="metadata"
-        onTimeUpdate={handleAudioTimeUpdate}
+        preload="auto"
+        onTimeUpdate={() => audioHandlersRef.current.onTimeUpdate()}
         onLoadedMetadata={() => {
           if (audioRef.current && Number.isFinite(audioRef.current.duration)) {
-            setDuration(audioRef.current.duration);
+            const dur = audioRef.current.duration;
+            setDuration(dur);
+            const snap = playbackSnapshotRef.current;
+            const rate = snap.speedMode === 'slowed' ? 0.85 : snap.speedMode === 'sped' ? 1.15 : 1;
+            updateMediaSessionPositionAndState(
+              !audioRef.current.paused,
+              dur,
+              audioRef.current.currentTime,
+              rate
+            );
           }
         }}
-        onEnded={handleAudioEnded}
+        onEnded={() => audioHandlersRef.current.onEnded()}
+        onPlay={() => setIsPlaying(true)}
+        onPause={() => {
+          if (audioRef.current && !audioRef.current.ended && !switchingTrackRef.current) {
+            setIsPlaying(false);
+          }
+        }}
         onError={() => {
+          switchingTrackRef.current = false;
           setIsPlaying(false);
           if (!navigator.onLine) {
             showToast('Offline - Saved songs only');
           }
         }}
       />
+      {/* Hidden 5-Second Preload Audio Element for gapless Auto-Next */}
+      <audio ref={preloadAudioRef} preload="auto" muted className="hidden" aria-hidden="true" />
 
       {/* Top Live Pill / Dynamic Island Mini-Player (when minimized / backgrounded) */}
       <AnimatePresence>
@@ -1878,8 +2220,8 @@ export default function App() {
                   currentSong={currentSong}
                   isPlaying={isPlaying}
                   accentHex={currentTheme.hex}
-                  onPlaySong={(song) => {
-                    playSong(song, allSongs);
+                  onPlaySong={(song, customQueue) => {
+                    playSong(song, customQueue || allSongs);
                     setFullPlayerOpen(true);
                   }}
                   onPlayNext={handlePlayNext}
@@ -2106,6 +2448,8 @@ export default function App() {
         isOpen={fullPlayerOpen}
         song={currentSong}
         queue={queue}
+        upNextSong={upNextSong}
+        upNextSongs={upNextSongs}
         isPlaying={isPlaying}
         currentTime={currentTime}
         duration={duration}
@@ -2135,10 +2479,17 @@ export default function App() {
         onSeek={handleSeek}
         onToggleShuffle={() => {
           hapticToggle();
-          setShuffle((s) => !s);
+          setShuffle((s) => {
+            const nextVal = !s;
+            shufflePlayedIdsRef.current = new Set(currentSong ? [currentSong.id] : []);
+            setShuffledNextId(null);
+            preloadedSongIdRef.current = null;
+            return nextVal;
+          });
         }}
         onCycleRepeat={() => {
           hapticToggle();
+          preloadedSongIdRef.current = null;
           setRepeatMode((m) => (m === 'off' ? 'all' : m === 'all' ? 'one' : 'off'));
         }}
         onChangeSpeedMode={(mode) => {

@@ -41,6 +41,8 @@ interface FullPlayerModalProps {
   isOpen: boolean;
   song: Song | null;
   queue: Song[];
+  upNextSong: Song | null;
+  upNextSongs: Song[];
   isPlaying: boolean;
   currentTime: number;
   duration: number;
@@ -98,6 +100,8 @@ export const FullPlayerModal: React.FC<FullPlayerModalProps> = ({
   isOpen,
   song,
   queue,
+  upNextSong,
+  upNextSongs,
   isPlaying,
   currentTime,
   duration,
@@ -486,6 +490,45 @@ export const FullPlayerModal: React.FC<FullPlayerModalProps> = ({
                 )}
               </button>
             </div>
+
+            {/* Up Next Quick Preview Bar (Tap to open full Up Next list) */}
+            <button
+              type="button"
+              onClick={() => setActiveSheet('queue')}
+              className="w-full px-3 py-2 rounded-xl bg-[#121212] hover:bg-[#181818] border border-white/10 flex items-center justify-between gap-2.5 text-left active:scale-[0.99] transition-transform cursor-pointer"
+            >
+              <div className="flex items-center gap-2.5 min-w-0">
+                <span
+                  className="px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wider text-black shrink-0"
+                  style={{ backgroundColor: accentHex }}
+                >
+                  {repeatMode === 'one' ? 'Repeat 1' : 'Up Next'}
+                </span>
+                {repeatMode === 'one' ? (
+                  <p className="text-xs font-semibold text-white truncate">
+                    Replaying: {song.title}
+                  </p>
+                ) : upNextSong ? (
+                  <div className="flex items-center gap-2 min-w-0">
+                    <img
+                      src={upNextSong.cover}
+                      alt={upNextSong.title}
+                      referrerPolicy="no-referrer"
+                      className="w-6 h-6 rounded object-cover shrink-0"
+                    />
+                    <p className="text-xs font-semibold text-white truncate">
+                      {upNextSong.title}{' '}
+                      <span className="text-[#B3B3B3] font-normal">· {upNextSong.artist}</span>
+                    </p>
+                  </div>
+                ) : (
+                  <p className="text-xs text-[#B3B3B3] truncate">
+                    End of Queue (Repeat Off)
+                  </p>
+                )}
+              </div>
+              <ListMusic className="w-4 h-4 text-[#B3B3B3] shrink-0" />
+            </button>
 
             {/* 4-Button Studio Strip: Sound FX, Loop & Clip, Sleep, Queue */}
             <div className="grid grid-cols-4 gap-2">
@@ -881,93 +924,148 @@ export const FullPlayerModal: React.FC<FullPlayerModalProps> = ({
                     </div>
                   )}
 
-                  {/* Sheet: True Queue Control */}
+                  {/* Sheet: True Queue Control with Up Next */}
                   {activeSheet === 'queue' && (
-                    <div className="flex flex-col gap-1.5">
-                      {queue.map((qSong, idx) => {
-                        const active = qSong.id === song.id;
-                        const excludedShuffle = excludedShuffleSongIds.includes(qSong.id);
-                        return (
-                          <div
-                            key={`${qSong.id}-${idx}`}
-                            className={`p-2 rounded-xl flex items-center gap-2 transition-colors ${
-                              active ? 'bg-white/10' : 'bg-black/40 hover:bg-white/5'
-                            }`}
-                          >
-                            <button
-                              type="button"
-                              onClick={() => {
-                                onSelectQueueSong(qSong);
-                                setActiveSheet('none');
-                              }}
-                              className="flex items-center gap-2.5 flex-1 min-w-0 text-left cursor-pointer"
-                            >
-                              <img
-                                src={qSong.cover}
-                                alt={qSong.title}
-                                referrerPolicy="no-referrer"
-                                className="w-10 h-10 rounded-lg object-cover shrink-0"
-                              />
-                              <div className="flex-1 min-w-0">
-                                <p
-                                  className="text-xs font-bold truncate"
-                                  style={{ color: active ? accentHex : '#ffffff' }}
-                                >
-                                  {qSong.title}
-                                </p>
-                                <p className="text-[11px] text-[#B3B3B3] truncate">
-                                  {qSong.artist}
-                                  {excludedShuffle ? ' · Hidden in Shuffle' : ''}
-                                </p>
-                              </div>
-                            </button>
-
-                            <div className="flex items-center gap-0.5 shrink-0">
-                              <button
-                                type="button"
-                                onClick={() => onToggleExcludeShuffle(qSong.id)}
-                                title={excludedShuffle ? 'Allow in Shuffle' : 'Skip in Shuffle'}
-                                className="w-7 h-7 rounded-lg hover:bg-white/10 flex items-center justify-center cursor-pointer"
-                                style={{ color: excludedShuffle ? accentHex : '#71717a' }}
-                                aria-label="Toggle skip in shuffle"
-                              >
-                                <EyeOff className="w-3.5 h-3.5" />
-                              </button>
-                              <button
-                                type="button"
-                                disabled={idx === 0}
-                                onClick={() => onMoveQueueItem(idx, -1)}
-                                className="w-7 h-7 rounded-lg hover:bg-white/10 flex items-center justify-center text-zinc-400 disabled:opacity-25 cursor-pointer"
-                                aria-label="Move up"
-                              >
-                                <ArrowUp className="w-3.5 h-3.5" />
-                              </button>
-                              <button
-                                type="button"
-                                disabled={idx === queue.length - 1}
-                                onClick={() => onMoveQueueItem(idx, 1)}
-                                className="w-7 h-7 rounded-lg hover:bg-white/10 flex items-center justify-center text-zinc-400 disabled:opacity-25 cursor-pointer"
-                                aria-label="Move down"
-                              >
-                                <ArrowDown className="w-3.5 h-3.5" />
-                              </button>
-                              {!active && queue.length > 1 && (
-                                <button
-                                  type="button"
-                                  onClick={() => onRemoveQueueItem(qSong.id)}
-                                  className="w-7 h-7 rounded-lg hover:bg-rose-500/15 flex items-center justify-center text-zinc-500 hover:text-rose-400 cursor-pointer"
-                                  aria-label="Remove from queue"
-                                >
-                                  <X className="w-3.5 h-3.5" />
-                                </button>
-                              )}
-                              {active && (
-                                <AudioLines className="w-4 h-4 ml-1" style={{ color: accentHex }} />
-                              )}
-                            </div>
+                    <div className="flex flex-col gap-3">
+                      {/* Now Playing */}
+                      <div>
+                        <p className="text-[11px] font-bold uppercase tracking-wider text-[#B3B3B3] mb-1.5">
+                          Now Playing
+                        </p>
+                        <div className="p-2.5 rounded-xl bg-white/10 flex items-center gap-2.5">
+                          <img
+                            src={song.cover}
+                            alt={song.title}
+                            referrerPolicy="no-referrer"
+                            className="w-10 h-10 rounded-lg object-cover shrink-0"
+                          />
+                          <div className="flex-1 min-w-0">
+                            <p className="text-xs font-bold truncate" style={{ color: accentHex }}>
+                              {song.title}
+                            </p>
+                            <p className="text-[11px] text-[#B3B3B3] truncate">{song.artist}</p>
                           </div>
-                        );
-                      })}
+                          <AudioLines className="w-4 h-4 shrink-0" style={{ color: accentHex }} />
+                        </div>
+                      </div>
+
+                      {/* Up Next Ordered List */}
+                      <div>
+                        <div className="flex items-center justify-between mb-1.5">
+                          <p className="text-[11px] font-bold uppercase tracking-wider text-[#B3B3B3]">
+                            Up Next ({upNextSongs.length})
+                          </p>
+                          <span className="text-[10px] font-mono-tabular text-zinc-400">
+                            {repeatMode === 'one'
+                              ? 'Repeat One'
+                              : shuffle
+                              ? 'Shuffle On'
+                              : repeatMode === 'all'
+                              ? 'Repeat All'
+                              : 'In Order'}
+                          </span>
+                        </div>
+
+                        {upNextSongs.length === 0 ? (
+                          <div className="rounded-xl bg-black/50 border border-white/10 p-4 text-center text-xs text-[#B3B3B3]">
+                            End of Queue. Turn on Repeat All or Shuffle to keep looping.
+                          </div>
+                        ) : (
+                          <div className="flex flex-col gap-1.5">
+                            {upNextSongs.map((qSong, upIdx) => {
+                              const queueIdx = queue.findIndex((s) => s.id === qSong.id);
+                              const excludedShuffle = excludedShuffleSongIds.includes(qSong.id);
+                              const isImmediateNext = upIdx === 0;
+                              return (
+                                <div
+                                  key={`upnext-${qSong.id}-${upIdx}`}
+                                  className={`p-2 rounded-xl flex items-center gap-2 transition-colors ${
+                                    isImmediateNext
+                                      ? 'bg-white/[0.07] border border-white/10'
+                                      : 'bg-black/40 hover:bg-white/5'
+                                  }`}
+                                >
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      onSelectQueueSong(qSong);
+                                      setActiveSheet('none');
+                                    }}
+                                    className="flex items-center gap-2.5 flex-1 min-w-0 text-left cursor-pointer"
+                                  >
+                                    <img
+                                      src={qSong.cover}
+                                      alt={qSong.title}
+                                      referrerPolicy="no-referrer"
+                                      className="w-10 h-10 rounded-lg object-cover shrink-0"
+                                    />
+                                    <div className="flex-1 min-w-0">
+                                      <div className="flex items-center gap-1.5 min-w-0">
+                                        {isImmediateNext && (
+                                          <span
+                                            className="px-1.5 py-0.5 rounded text-[9px] font-bold uppercase text-black shrink-0"
+                                            style={{ backgroundColor: accentHex }}
+                                          >
+                                            Next
+                                          </span>
+                                        )}
+                                        <p className="text-xs font-bold text-white truncate">
+                                          {qSong.title}
+                                        </p>
+                                      </div>
+                                      <p className="text-[11px] text-[#B3B3B3] truncate">
+                                        {qSong.artist}
+                                        {excludedShuffle ? ' · Hidden in Shuffle' : ''}
+                                      </p>
+                                    </div>
+                                  </button>
+
+                                  <div className="flex items-center gap-0.5 shrink-0">
+                                    <button
+                                      type="button"
+                                      onClick={() => onToggleExcludeShuffle(qSong.id)}
+                                      title={excludedShuffle ? 'Allow in Shuffle' : 'Skip in Shuffle'}
+                                      className="w-7 h-7 rounded-lg hover:bg-white/10 flex items-center justify-center cursor-pointer"
+                                      style={{ color: excludedShuffle ? accentHex : '#71717a' }}
+                                      aria-label="Toggle skip in shuffle"
+                                    >
+                                      <EyeOff className="w-3.5 h-3.5" />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      disabled={queueIdx <= 0}
+                                      onClick={() => queueIdx >= 0 && onMoveQueueItem(queueIdx, -1)}
+                                      className="w-7 h-7 rounded-lg hover:bg-white/10 flex items-center justify-center text-zinc-400 disabled:opacity-25 cursor-pointer"
+                                      aria-label="Move up"
+                                    >
+                                      <ArrowUp className="w-3.5 h-3.5" />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      disabled={queueIdx === -1 || queueIdx >= queue.length - 1}
+                                      onClick={() => queueIdx >= 0 && onMoveQueueItem(queueIdx, 1)}
+                                      className="w-7 h-7 rounded-lg hover:bg-white/10 flex items-center justify-center text-zinc-400 disabled:opacity-25 cursor-pointer"
+                                      aria-label="Move down"
+                                    >
+                                      <ArrowDown className="w-3.5 h-3.5" />
+                                    </button>
+                                    {queue.length > 1 && (
+                                      <button
+                                        type="button"
+                                        onClick={() => onRemoveQueueItem(qSong.id)}
+                                        className="w-7 h-7 rounded-lg hover:bg-rose-500/15 flex items-center justify-center text-zinc-500 hover:text-rose-400 cursor-pointer"
+                                        aria-label="Remove from queue"
+                                      >
+                                        <X className="w-3.5 h-3.5" />
+                                      </button>
+                                    )}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
                     </div>
                   )}
                 </motion.div>
