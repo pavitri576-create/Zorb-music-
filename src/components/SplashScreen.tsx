@@ -1,106 +1,65 @@
-import React, { useEffect, useMemo, useRef } from 'react';
+import React, { useEffect, useRef } from 'react';
 
 interface SplashScreenProps {
   accentHex: string;
   onComplete: () => void;
 }
 
-interface SonicColumn {
-  id: number;
-  xStartPct: number;
-  spreadDir: number;
-  widthPx: number;
-  heightPct: number;
-  tone: 'accent' | 'white' | 'deep';
-  maxOpacity: number;
-  delayNorm: number;
-  blurPx: number;
-}
-
 function clamp01(v: number): number {
   return Math.max(0, Math.min(1, v));
 }
 
-function easeOutCubic(t: number): number {
+// After Effects Graph Editor style curves
+function easeOutExpo(t: number): number {
   const x = clamp01(t);
-  return 1 - Math.pow(1 - x, 3);
+  return x === 1 ? 1 : 1 - Math.pow(2, -10 * x);
 }
 
-function easeInCubic(t: number): number {
+function easeOutQuart(t: number): number {
   const x = clamp01(t);
-  return x * x * x;
+  return 1 - Math.pow(1 - x, 4);
 }
 
-function easeInOutQuart(t: number): number {
+function easeInOutExpo(t: number): number {
   const x = clamp01(t);
-  return x < 0.5 ? 8 * x * x * x * x : 1 - Math.pow(-2 * x + 2, 4) / 2;
+  if (x === 0 || x === 1) return x;
+  return x < 0.5 ? Math.pow(2, 20 * x - 10) / 2 : (2 - Math.pow(2, -20 * x + 10)) / 2;
+}
+
+function easeInOutCubic(t: number): number {
+  const x = clamp01(t);
+  return x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2;
 }
 
 /**
- * 100% Silent, ZORB-Original Cinema Opening (~3.10s)
- * Same flagship pacing, camera push-through, and zoom-dissolve quality —
- * crafted in ZORB's signature identity:
- * - Hollow black + theme-outline geometric "Z" emblem (matching ZORB Hoodie/Cap outline DNA)
- * - Symmetrical Sonic Equalizer light columns in ZORB's theme + crisp white (no rainbow copy)
- * - Outline "ZORB" + "Z = M × D²" wordmark lockup -> seamless zoom-dissolve into Home
+ * 3.2-Second After Effects Style Studio Ident (No Skip Button)
+ * - [0.00s - 0.65s] SVG Trim-Path Emblem draw + Horizon hairline wipe
+ * - [0.45s - 1.35s] Track-Matte masked ZORB wordmark rise + exponential tracking settle
+ * - [1.15s - 2.25s] Specular light sweep + accent bar compression + Subtitle matte reveal
+ * - [2.25s - 3.20s] Clean lock-in hold + seamless 1.035x push-out dissolve into Home
  */
 export const SplashScreen: React.FC<SplashScreenProps> = ({ accentHex, onComplete }) => {
   const rootRef = useRef<HTMLDivElement | null>(null);
-  const zStageRef = useRef<HTMLDivElement | null>(null);
-  const zOutlinePathRef = useRef<SVGPathElement | null>(null);
-  const zInnerBevelRef = useRef<SVGPathElement | null>(null);
-  const zFillPathRef = useRef<SVGPathElement | null>(null);
-  const zDiagSlashRef = useRef<SVGLineElement | null>(null);
-  const zGlowRef = useRef<HTMLDivElement | null>(null);
-  const spectrumWrapRef = useRef<HTMLDivElement | null>(null);
-  const colRefs = useRef<(HTMLDivElement | null)[]>([]);
-  const wordmarkRef = useRef<HTMLDivElement | null>(null);
-  const glintRef = useRef<HTMLDivElement | null>(null);
-  const subtitleRef = useRef<HTMLDivElement | null>(null);
+  const stageRef = useRef<HTMLDivElement | null>(null);
+  const emblemBoxRef = useRef<SVGRectElement | null>(null);
+  const bar1Ref = useRef<SVGLineElement | null>(null);
+  const bar2Ref = useRef<SVGLineElement | null>(null);
+  const bar3Ref = useRef<SVGLineElement | null>(null);
+  const wordmarkRef = useRef<HTMLSpanElement | null>(null);
+  const sheenRef = useRef<HTMLDivElement | null>(null);
+  const ruleRef = useRef<HTMLDivElement | null>(null);
+  const subtitleRef = useRef<HTMLSpanElement | null>(null);
+  const glowRef = useRef<HTMLDivElement | null>(null);
+
   const onCompleteRef = useRef(onComplete);
   onCompleteRef.current = onComplete;
-
-  // Symmetrical stereo sonic light columns strictly in ZORB palette (accent + white + deep shadow)
-  const columns = useMemo<SonicColumn[]>(() => {
-    const pairs = 15; // 30 symmetrical columns
-    const list: SonicColumn[] = [];
-    for (let i = 0; i < pairs; i++) {
-      const norm = i / (pairs - 1); // 0 (center) -> 1 (outer)
-      const heightPct = 92 - norm * 32 + (i % 3) * 6;
-      const tone: SonicColumn['tone'] =
-        i % 4 === 0 ? 'white' : i % 3 === 0 ? 'deep' : 'accent';
-      const widthPx = i % 5 === 0 ? 10 : i % 2 === 0 ? 4 : 2;
-      const maxOpacity = tone === 'white' ? 0.85 : tone === 'accent' ? 0.9 : 0.55;
-      const blurPx = i % 6 === 0 ? 2 : 0;
-
-      [-1, 1].forEach((side, sideIdx) => {
-        list.push({
-          id: i * 2 + sideIdx,
-          xStartPct: side * (1.2 + norm * 18),
-          spreadDir: side * (1.35 + norm * 2.85),
-          widthPx,
-          heightPct,
-          tone,
-          maxOpacity,
-          delayNorm: (i % 5) * 0.035,
-          blurPx,
-        });
-      });
-    }
-    return list;
-  }, []);
 
   useEffect(() => {
     const prefersReduced =
       typeof window !== 'undefined' &&
       window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
 
-    if (prefersReduced) {
-      const timer = window.setTimeout(() => onCompleteRef.current(), 650);
-      return () => window.clearTimeout(timer);
-    }
-
-    const TOTAL_MS = 3100;
+    const TOTAL_MS = prefersReduced ? 1200 : 3200;
     const start = performance.now();
     let rafId = 0;
     let done = false;
@@ -111,122 +70,132 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({ accentHex, onComplet
       onCompleteRef.current();
     };
 
-    const zPathLength = zOutlinePathRef.current?.getTotalLength?.() || 920;
-    if (zOutlinePathRef.current) {
-      zOutlinePathRef.current.style.strokeDasharray = `${zPathLength}`;
-      zOutlinePathRef.current.style.strokeDashoffset = `${zPathLength}`;
-    }
-
     const tick = (now: number) => {
       const elapsedMs = now - start;
       const t = elapsedMs / 1000;
 
-      // -----------------------------------------------------------
-      // PHASE 1 (0.00s - 0.86s): ZORB Outline Geometric "Z" Trace
-      // -----------------------------------------------------------
-      const drawP = easeInOutQuart((t - 0.04) / 0.56);
-      if (zOutlinePathRef.current) {
-        zOutlinePathRef.current.style.strokeDashoffset = `${(zPathLength * (1 - drawP)).toFixed(2)}`;
-      }
-      if (zInnerBevelRef.current) {
-        zInnerBevelRef.current.style.opacity = `${(easeOutCubic((t - 0.42) / 0.32) * 0.7).toFixed(3)}`;
-      }
-      if (zFillPathRef.current) {
-        zFillPathRef.current.style.opacity = `${easeOutCubic((t - 0.32) / 0.35).toFixed(3)}`;
-      }
-      if (zDiagSlashRef.current) {
-        const slashP = easeOutCubic((t - 0.52) / 0.28);
-        zDiagSlashRef.current.style.opacity = `${(slashP * 0.85).toFixed(3)}`;
-        zDiagSlashRef.current.style.transform = `scaleY(${slashP.toFixed(3)})`;
+      if (prefersReduced) {
+        if (emblemBoxRef.current) emblemBoxRef.current.style.strokeDashoffset = '0';
+        if (bar1Ref.current) bar1Ref.current.style.strokeDashoffset = '0';
+        if (bar2Ref.current) bar2Ref.current.style.strokeDashoffset = '0';
+        if (bar3Ref.current) bar3Ref.current.style.strokeDashoffset = '0';
+        if (wordmarkRef.current) {
+          wordmarkRef.current.style.opacity = '1';
+          wordmarkRef.current.style.transform = 'translate3d(0, 0, 0)';
+          wordmarkRef.current.style.letterSpacing = '0.1em';
+        }
+        if (ruleRef.current) {
+          ruleRef.current.style.opacity = '1';
+          ruleRef.current.style.transform = 'scaleX(0.28)';
+        }
+        if (subtitleRef.current) {
+          subtitleRef.current.style.opacity = '0.75';
+          subtitleRef.current.style.transform = 'translate3d(0, 0, 0)';
+        }
+        if (rootRef.current) {
+          const fadeOut = t > 0.85 ? easeInOutCubic((t - 0.85) / 0.35) : 0;
+          rootRef.current.style.opacity = `${clamp01(1 - fadeOut).toFixed(4)}`;
+        }
+        if (elapsedMs >= TOTAL_MS) {
+          finish();
+          return;
+        }
+        rafId = requestAnimationFrame(tick);
+        return;
       }
 
-      // -----------------------------------------------------------
-      // PHASE 2 (0.86s - 1.56s): Camera Dive Through the Hollow "Z"
-      // -----------------------------------------------------------
-      if (zStageRef.current) {
-        if (t < 0.86) {
-          const settle = 0.94 + 0.06 * easeOutCubic(t / 0.86);
-          zStageRef.current.style.transform = `scale(${settle.toFixed(4)})`;
-          zStageRef.current.style.opacity = '1';
+      // 1. Emblem Trim Path (0.08s -> 0.72s)
+      const boxP = easeInOutExpo((t - 0.08) / 0.64);
+      if (emblemBoxRef.current) {
+        const perimeter = 148;
+        emblemBoxRef.current.style.strokeDashoffset = `${(perimeter * (1 - boxP)).toFixed(2)}`;
+        emblemBoxRef.current.style.opacity = `${clamp01(t / 0.14).toFixed(3)}`;
+      }
+
+      // 3 inner acoustic equalizer trim paths with staggered rhythm (0.28s -> 0.85s)
+      const bars = [
+        { ref: bar1Ref.current, delay: 0.28, len: 14, phase: 0.0 },
+        { ref: bar2Ref.current, delay: 0.36, len: 22, phase: 1.4 },
+        { ref: bar3Ref.current, delay: 0.44, len: 16, phase: 2.8 },
+      ];
+      for (const b of bars) {
+        if (!b.ref) continue;
+        const bp = easeOutExpo((t - b.delay) / 0.42);
+        b.ref.style.strokeDashoffset = `${(b.len * (1 - bp)).toFixed(2)}`;
+        b.ref.style.opacity = `${clamp01((t - b.delay) / 0.12).toFixed(3)}`;
+        // Subtle live breath between 1.0s and 2.5s
+        if (t > 0.9 && t < 2.6) {
+          const breathEnv = Math.sin(clamp01((t - 0.9) / 1.7) * Math.PI);
+          const scaleY = 1 + Math.sin(t * 7.2 + b.phase) * 0.16 * breathEnv;
+          b.ref.style.transform = `scaleY(${scaleY.toFixed(3)})`;
         } else {
-          const diveP = easeInCubic((t - 0.86) / 0.62);
-          const scale = 1 + diveP * 4.8;
-          const opacity = clamp01(1 - easeOutCubic((t - 0.98) / 0.42));
-          zStageRef.current.style.transform = `scale(${scale.toFixed(4)})`;
-          zStageRef.current.style.opacity = `${opacity.toFixed(4)}`;
+          b.ref.style.transform = 'scaleY(1)';
         }
       }
 
-      if (zGlowRef.current) {
-        const gIn = easeOutCubic((t - 0.2) / 0.55);
-        const gOut = t > 0.92 ? clamp01(1 - (t - 0.92) / 0.55) : 1;
-        zGlowRef.current.style.opacity = `${(gIn * gOut * 0.52).toFixed(3)}`;
-      }
-
-      // -----------------------------------------------------------
-      // PHASE 2B (0.88s - 2.10s): Symmetrical Sonic Light Columns
-      // -----------------------------------------------------------
-      if (spectrumWrapRef.current) {
-        const specIn = easeOutCubic((t - 0.88) / 0.22);
-        const specOut = t > 1.66 ? clamp01(1 - easeInCubic((t - 1.66) / 0.44)) : 1;
-        spectrumWrapRef.current.style.opacity = `${(specIn * specOut).toFixed(4)}`;
-
-        const travelP = easeInOutQuart((t - 0.88) / 1.22);
-        for (let i = 0; i < columns.length; i++) {
-          const el = colRefs.current[i];
-          if (!el) continue;
-          const c = columns[i];
-          const localP = clamp01((travelP - c.delayNorm) / (1 - c.delayNorm));
-          const xVw = c.xStartPct + c.spreadDir * localP * 40;
-          const scaleX = 1 + localP * 1.4;
-          const scaleY = 0.55 + localP * 0.85;
-          el.style.transform = `translate3d(${xVw.toFixed(2)}vw, 0, 0) scaleX(${scaleX.toFixed(3)}) scaleY(${scaleY.toFixed(3)})`;
-          el.style.opacity = `${(c.maxOpacity * clamp01(localP * 3.2)).toFixed(3)}`;
-        }
-      }
-
-      // -----------------------------------------------------------
-      // PHASE 3 (1.72s - 2.74s): ZORB Signature Outline Wordmark
-      // -----------------------------------------------------------
+      // 2. Track-Matte Wordmark Rise + Kerning Settle (0.46s -> 1.38s)
       if (wordmarkRef.current) {
-        if (t < 1.72) {
-          wordmarkRef.current.style.opacity = '0';
-          wordmarkRef.current.style.transform = 'scale(0.92)';
+        const revealP = easeOutExpo((t - 0.46) / 0.88);
+        const trackP = easeOutQuart((t - 0.52) / 0.92);
+        const yPct = (1 - revealP) * 108;
+        const trackingEm = 0.28 - trackP * 0.17; // 0.28em -> 0.11em
+        wordmarkRef.current.style.transform = `translate3d(0, ${yPct.toFixed(2)}%, 0)`;
+        wordmarkRef.current.style.letterSpacing = `${trackingEm.toFixed(4)}em`;
+        wordmarkRef.current.style.opacity = `${clamp01((t - 0.46) / 0.2).toFixed(3)}`;
+      }
+
+      // 3. Horizon Hairline -> Compact Accent Rule (0.05s -> 1.45s)
+      if (ruleRef.current) {
+        if (t < 0.72) {
+          const expand = easeInOutExpo((t - 0.05) / 0.55);
+          ruleRef.current.style.transform = `scaleX(${expand.toFixed(4)})`;
+          ruleRef.current.style.opacity = `${(0.85 * clamp01(t / 0.15)).toFixed(3)}`;
         } else {
-          const wIn = easeOutCubic((t - 1.72) / 0.40);
-          const wScale = 0.92 + wIn * 0.08;
-          wordmarkRef.current.style.opacity = `${wIn.toFixed(4)}`;
-          wordmarkRef.current.style.transform = `scale(${wScale.toFixed(4)})`;
+          const compress = easeInOutExpo((t - 0.72) / 0.65);
+          const scaleX = 1 - compress * 0.74; // settles to crisp 0.26 ratio bar
+          ruleRef.current.style.transform = `scaleX(${scaleX.toFixed(4)})`;
+          ruleRef.current.style.opacity = '0.95';
         }
       }
 
-      if (glintRef.current) {
-        if (t >= 1.92 && t <= 2.55) {
-          const gP = easeInOutQuart((t - 1.92) / 0.55);
-          glintRef.current.style.opacity = `${Math.sin(gP * Math.PI).toFixed(3)}`;
-          glintRef.current.style.transform = `translate3d(${(-110 + gP * 220).toFixed(1)}%, 0, 0) skewX(-20deg)`;
+      // 4. Subtle Specular Light Sweep across Wordmark (1.28s -> 2.05s)
+      if (sheenRef.current) {
+        if (t >= 1.28 && t <= 2.08) {
+          const sp = easeInOutCubic((t - 1.28) / 0.8);
+          const xPct = -130 + sp * 260;
+          sheenRef.current.style.transform = `translate3d(${xPct.toFixed(1)}%, 0, 0) skewX(-18deg)`;
+          sheenRef.current.style.opacity = `${(Math.sin(sp * Math.PI) * 0.42).toFixed(3)}`;
         } else {
-          glintRef.current.style.opacity = '0';
+          sheenRef.current.style.opacity = '0';
         }
       }
 
+      // 5. Subtitle Track-Matte Reveal (1.22s -> 1.95s)
       if (subtitleRef.current) {
-        const sIn = easeOutCubic((t - 1.94) / 0.34);
-        subtitleRef.current.style.opacity = `${sIn.toFixed(4)}`;
-        subtitleRef.current.style.transform = `translate3d(0, ${(1 - sIn) * 8}px, 0)`;
+        const subP = easeOutQuart((t - 1.22) / 0.68);
+        const yPct = (1 - subP) * 105;
+        subtitleRef.current.style.transform = `translate3d(0, ${yPct.toFixed(2)}%, 0)`;
+        subtitleRef.current.style.opacity = `${(subP * 0.72).toFixed(3)}`;
       }
 
-      // -----------------------------------------------------------
-      // PHASE 4 (2.72s - 3.10s): Seamless Cinema Zoom-Dissolve
-      // -----------------------------------------------------------
-      if (rootRef.current) {
-        if (t > 2.72) {
-          const outP = easeInCubic((t - 2.72) / 0.38);
+      // 6. Subtle Studio Ambient Vignette Depth (0.0s -> 3.2s)
+      if (glowRef.current) {
+        const inP = easeOutQuart(t / 1.4);
+        const outP = t > 2.6 ? easeInOutCubic((t - 2.6) / 0.6) : 0;
+        const op = inP * 0.22 * (1 - outP);
+        glowRef.current.style.opacity = `${op.toFixed(3)}`;
+      }
+
+      // 7. Final Camera Micro Push-Out & Seamless Dissolve (2.72s -> 3.20s)
+      if (stageRef.current && rootRef.current) {
+        if (t >= 2.72) {
+          const outP = easeInOutCubic((t - 2.72) / 0.48);
+          const scale = 1 + outP * 0.036;
+          stageRef.current.style.transform = `scale(${scale.toFixed(4)})`;
           rootRef.current.style.opacity = `${clamp01(1 - outP).toFixed(4)}`;
-          rootRef.current.style.transform = `scale(${(1 + outP * 0.065).toFixed(4)})`;
         } else {
+          stageRef.current.style.transform = 'scale(1)';
           rootRef.current.style.opacity = '1';
-          rootRef.current.style.transform = 'scale(1)';
         }
       }
 
@@ -240,169 +209,144 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({ accentHex, onComplet
 
     rafId = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(rafId);
-  }, [columns]);
+  }, []);
 
   return (
     <div
       ref={rootRef}
-      onClick={() => onCompleteRef.current()}
-      className="fixed inset-0 z-50 bg-black flex items-center justify-center overflow-hidden select-none will-change-transform cursor-pointer"
+      className="fixed inset-0 z-50 bg-black flex items-center justify-center overflow-hidden select-none will-change-transform"
       aria-label="ZORB splash intro"
     >
-      {/* Subtle Theme Accent Ambient Glow */}
+      {/* Subtle Studio Radial Vignette */}
       <div
-        ref={zGlowRef}
-        className="pointer-events-none absolute w-[360px] h-[360px] rounded-full opacity-0"
+        ref={glowRef}
+        className="pointer-events-none absolute w-[420px] h-[420px] rounded-full"
         style={{
-          background: `radial-gradient(circle, ${accentHex}38 0%, ${accentHex}10 45%, transparent 72%)`,
-          filter: 'blur(34px)',
+          background: `radial-gradient(circle, ${accentHex}55 0%, ${accentHex}14 42%, transparent 72%)`,
+          filter: 'blur(64px)',
+          opacity: 0,
         }}
       />
 
-      {/* Stage 1 & 2: ZORB Hollow Outline Geometric "Z" Mark */}
+      {/* Centered Composition Stage */}
       <div
-        ref={zStageRef}
-        className="relative z-20 flex items-center justify-center will-change-transform"
+        ref={stageRef}
+        className="relative z-10 flex flex-col items-center px-6 will-change-transform"
       >
+        {/* Architectural SVG Trim-Path Emblem */}
         <svg
-          viewBox="0 0 180 200"
-          className="w-32 h-36 sm:w-40 sm:h-44 overflow-visible"
+          width="46"
+          height="46"
+          viewBox="0 0 46 46"
+          fill="none"
+          className="mb-5"
           aria-hidden="true"
         >
-          <defs>
-            <linearGradient id="zorbEdgeAccent" x1="0%" y1="0%" x2="100%" y2="100%">
-              <stop offset="0%" stopColor="#FFFFFF" stopOpacity="0.95" />
-              <stop offset="32%" stopColor={accentHex} />
-              <stop offset="100%" stopColor={accentHex} />
-            </linearGradient>
-          </defs>
-
-          {/* Deep Pure-Black Hollow Core (matches ZORB Hoodie/Cap outline logo) */}
-          <path
-            ref={zFillPathRef}
-            d="M 24 22 H 156 V 54 L 68 146 H 156 V 178 H 24 V 146 L 112 54 H 24 Z"
-            fill="#000000"
+          <rect
+            ref={emblemBoxRef}
+            x="4"
+            y="4"
+            width="38"
+            height="38"
+            rx="10"
+            stroke="rgba(255,255,255,0.9)"
+            strokeWidth="1.75"
+            strokeDasharray="148"
+            strokeDashoffset="148"
             style={{ opacity: 0 }}
           />
-
-          {/* Razor-Sharp Outer Theme Outline Trace */}
-          <path
-            ref={zOutlinePathRef}
-            d="M 24 22 H 156 V 54 L 68 146 H 156 V 178 H 24 V 146 L 112 54 H 24 Z"
-            fill="none"
-            stroke="url(#zorbEdgeAccent)"
-            strokeWidth="4.2"
-            strokeLinejoin="miter"
-            strokeLinecap="square"
-            style={{
-              filter: `drop-shadow(0 0 12px ${accentHex}88)`,
-            }}
-          />
-
-          {/* Subtle Inner White Rim Hairline */}
-          <path
-            ref={zInnerBevelRef}
-            d="M 30 28 H 148 V 50 L 59 144 V 152 H 150 V 172 H 30 V 150 L 119 56 V 48 H 30 Z"
-            fill="none"
-            stroke="#FFFFFF"
-            strokeOpacity="0.35"
-            strokeWidth="1"
-            style={{ opacity: 0 }}
-          />
-
-          {/* Signature Center Sonic Centerline */}
           <line
-            ref={zDiagSlashRef}
-            x1="132"
-            y1="38"
-            x2="48"
-            y2="162"
+            ref={bar1Ref}
+            x1="15.5"
+            y1="16"
+            x2="15.5"
+            y2="30"
             stroke={accentHex}
-            strokeWidth="1.5"
-            strokeOpacity="0.7"
-            style={{ transformOrigin: '90px 100px', opacity: 0 }}
+            strokeWidth="2.4"
+            strokeLinecap="round"
+            strokeDasharray="14"
+            strokeDashoffset="14"
+            style={{ opacity: 0, transformOrigin: '15.5px 23px' }}
+          />
+          <line
+            ref={bar2Ref}
+            x1="23"
+            y1="12"
+            x2="23"
+            y2="34"
+            stroke="#FFFFFF"
+            strokeWidth="2.4"
+            strokeLinecap="round"
+            strokeDasharray="22"
+            strokeDashoffset="22"
+            style={{ opacity: 0, transformOrigin: '23px 23px' }}
+          />
+          <line
+            ref={bar3Ref}
+            x1="30.5"
+            y1="15"
+            x2="30.5"
+            y2="31"
+            stroke={accentHex}
+            strokeWidth="2.4"
+            strokeLinecap="round"
+            strokeDasharray="16"
+            strokeDashoffset="16"
+            style={{ opacity: 0, transformOrigin: '30.5px 23px' }}
           />
         </svg>
-      </div>
 
-      {/* Stage 2B: Symmetrical ZORB Sonic Light Columns (Strictly Theme Accent + White) */}
-      <div
-        ref={spectrumWrapRef}
-        className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center overflow-hidden opacity-0"
-        aria-hidden="true"
-      >
-        {columns.map((c, idx) => {
-          const barColor =
-            c.tone === 'white'
-              ? '#FFFFFF'
-              : c.tone === 'accent'
-              ? accentHex
-              : `${accentHex}66`;
-
-          return (
-            <div
-              key={c.id}
-              ref={(el) => {
-                colRefs.current[idx] = el;
-              }}
-              className="absolute will-change-transform rounded-full"
-              style={{
-                height: `${c.heightPct}%`,
-                width: `${c.widthPx}px`,
-                background: `linear-gradient(to bottom, transparent 0%, ${barColor} 24%, ${barColor} 76%, transparent 100%)`,
-                filter: c.blurPx > 0 ? `blur(${c.blurPx}px)` : undefined,
-                opacity: 0,
-              }}
-            />
-          );
-        })}
-      </div>
-
-      {/* Stage 3: Signature ZORB Outline Wordmark Lockup */}
-      <div
-        ref={wordmarkRef}
-        className="pointer-events-none absolute z-30 flex flex-col items-center text-center px-6 opacity-0 will-change-transform"
-      >
-        <div className="relative overflow-hidden px-4 py-1">
-          <h1
-            className="font-display text-6xl sm:text-7xl font-extrabold uppercase tracking-[0.2em] pl-[0.2em] leading-none"
+        {/* Track-Matte Wordmark Reveal */}
+        <div className="relative overflow-hidden py-1 px-3">
+          <span
+            ref={wordmarkRef}
+            className="block font-display text-6xl sm:text-7xl font-extrabold uppercase leading-none text-white will-change-transform"
             style={{
-              color: '#000000',
-              WebkitTextStroke: `2.2px ${accentHex}`,
-              textShadow: `0 0 28px ${accentHex}4d`,
+              opacity: 0,
+              letterSpacing: '0.28em',
+              transform: 'translate3d(0, 108%, 0)',
+              marginRight: '-0.11em', // optical centering for tracking
             }}
           >
             ZORB
-          </h1>
+          </span>
 
-          {/* Crisp Diagonal Light Sheen Sweep */}
+          {/* Subtle Specular Sheen Pass */}
           <div
-            ref={glintRef}
-            className="pointer-events-none absolute inset-y-0 w-16 opacity-0"
+            ref={sheenRef}
+            className="pointer-events-none absolute inset-y-0 w-16 will-change-transform"
             style={{
+              opacity: 0,
               background:
-                'linear-gradient(90deg, transparent, rgba(255,255,255,0.45), transparent)',
+                'linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.38) 50%, transparent 100%)',
             }}
           />
         </div>
 
-        {/* Hairline Accent Bar */}
+        {/* Precision Accent Hairline Rule */}
         <div
-          className="mt-2.5 h-[2px] w-16 rounded-full"
+          ref={ruleRef}
+          className="mt-3 h-[2px] w-40 rounded-full will-change-transform"
           style={{
-            background: `linear-gradient(90deg, transparent, ${accentHex}, transparent)`,
+            backgroundColor: accentHex,
+            opacity: 0,
+            transform: 'scaleX(0)',
           }}
         />
 
-        <div
-          ref={subtitleRef}
-          className="mt-3 flex items-center gap-2.5 text-[11px] sm:text-xs font-mono-tabular uppercase tracking-[0.24em] text-[#B3B3B3] opacity-0"
-        >
-          <span style={{ color: accentHex }} className="font-bold">
-            Z = M × D²
+        {/* Track-Matte Subtitle Reveal */}
+        <div className="mt-3.5 overflow-hidden">
+          <span
+            ref={subtitleRef}
+            className="block font-mono-tabular text-[11px] sm:text-xs font-medium uppercase tracking-[0.32em] text-zinc-300 will-change-transform"
+            style={{
+              opacity: 0,
+              transform: 'translate3d(0, 105%, 0)',
+              marginRight: '-0.32em',
+            }}
+          >
+            MAKE YOUR FLOW
           </span>
-          <span className="text-white/25">·</span>
-          <span>MAKE YOUR FLOW</span>
         </div>
       </div>
     </div>

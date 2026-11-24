@@ -18,7 +18,17 @@ export type AppScreen =
 
 export type LibraryTab = 'playlists' | 'liked' | 'beats' | 'downloaded' | 'history';
 
+export type LibrarySortOption = 'default' | 'title-asc' | 'artist-asc' | 'duration-desc';
+
 export type RepeatMode = 'off' | 'all' | 'one';
+
+export type AudioSpeedMode = 'normal' | 'slowed' | 'sped';
+
+export type EqPresetId = 'flat' | 'sub-bass' | 'vocal-crisp';
+
+export type SleepTimerMode = 'off' | '15m' | '30m' | '60m' | 'end-of-track';
+
+export type CoinShopItemId = 'offline-6h' | 'ad-shield' | 'extra-space-5' | 'unlock-next-theme';
 
 export type BeatMood = 'DARK' | 'AGGRESSIVE' | 'CHILL';
 
@@ -79,6 +89,12 @@ export interface HistoryEntry {
   playedAt: string;
 }
 
+export interface SongBookmark {
+  id: string;
+  time: number;
+  label: string;
+}
+
 export interface ThemeOption {
   id: string;
   name: string;
@@ -93,10 +109,10 @@ export interface RewardMilestone {
   day: number;
   title: string;
   subtitle: string;
-  type: 'theme' | 'cap' | 'hoodie' | 'frame' | 'banner' | 'elite' | 'master' | 'legend';
+  type: 'theme' | 'space' | 'offline' | 'coins' | 'frame' | 'banner' | 'elite' | 'master' | 'legend';
   badgeName: string;
   themeId?: string;
-  image?: string;
+  coinsBonus?: number;
   description: string;
 }
 
@@ -120,11 +136,28 @@ export interface ZorbPersistedState {
   history: HistoryEntry[];
   searchHistory: string[];
   dopamineScore: number;
+  coins: number;
   dopamineHistory: { label: string; score: number; minutes: number }[];
   totalListenSeconds: number;
   streak: StreakState;
   claimedRewardIds: string[];
   notificationsEnabled: boolean;
+  hapticsEnabled: boolean;
   lastPlayedSongId: string | null;
   songsPlayedSinceAd?: number;
+  adSkipShields: number;
+  unlockedThemeIds: string[];
+  // Extra Space & Auto Scan
+  importSpaceLimit: number; // Starts at 10, expandable +5 up to 25 before Day 15
+  hasPromptedMusicScan: boolean;
+  // Offline Ad Unlock System
+  offlineUnlockedUntil: number | null; // Epoch ms (6 hours per ad)
+  offlineCarryOnCount: number; // Max 2 carry-ons before Watch Ad is mandatory
+  pendingSkippedAd: boolean; // True if user clicked Carry On and hasn't watched ad yet
+  // Spotify-Upgrade Features
+  songBookmarks: Record<string, SongBookmark[]>;
+  excludedShuffleSongIds: string[];
+  crossfadeSeconds: number; // 0 to 6 seconds
+  songPlayCounts: Record<string, number>;
+  listeningHours: Record<number, number>; // hour 0..23 -> total seconds
 }

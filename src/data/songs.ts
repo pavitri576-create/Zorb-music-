@@ -20,8 +20,7 @@ export interface AddSongInput {
 }
 
 /**
- * Easy helper to register any new song by dropping its MP3 into /public/songs/
- * and passing its Name, Cover, and File Name here.
+ * Registers built-in Phonk tracks mapped to their audio files in /public/songs/
  */
 export function addSong(input: AddSongInput): Song {
   return {
@@ -101,7 +100,7 @@ export const INITIAL_SONGS: Song[] = [
   addSong({
     id: 'lua-na-praca',
     title: 'LUA NA PRAÇA',
-    artist: 'DJ Samir, DJ Zarek',
+    artist: 'DJ Samir, DJ ZareK, DJ DUDA, LUNxdiE',
     cover: COVER_ART.brazilian,
     fileName: 'lua-na-praca.mp3',
     duration: 46,
@@ -111,7 +110,7 @@ export const INITIAL_SONGS: Song[] = [
   addSong({
     id: 'montagem-pegadora',
     title: 'MONTAGEM PEGADORA',
-    artist: 'Rubikdice, Chilx',
+    artist: 'Rubikdice, Chilx, WAA',
     cover: COVER_ART.gym,
     fileName: 'montagem-pegadora.mp3',
     duration: 46,
@@ -121,7 +120,7 @@ export const INITIAL_SONGS: Song[] = [
   addSong({
     id: 'heavenly-jumpstyle',
     title: 'HEAVENLY JUMPSTYLE',
-    artist: 'TWXNY, Sxilwix',
+    artist: 'TWXNY, Sxilwix, INNXCENCE',
     cover: COVER_ART.drift,
     fileName: 'heavenly-jumpstyle.mp3',
     duration: 46,
@@ -130,8 +129,8 @@ export const INITIAL_SONGS: Song[] = [
   }),
   addSong({
     id: 'luz-roja',
-    title: 'LUZ ROJA (VIP)',
-    artist: 'Phonk Collective',
+    title: 'LUZ ROJA',
+    artist: 'bxkq',
     cover: COVER_ART.brazilian,
     fileName: 'luz-roja.mp3',
     duration: 48,

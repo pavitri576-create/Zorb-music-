@@ -15,6 +15,11 @@ const DEFAULT_COVERS = [
 interface ImportSongModalProps {
   isOpen: boolean;
   accentHex: string;
+  usedSlots: number;
+  maxSlots: number;
+  isUnlimited: boolean;
+  canExpandMoreSpace: boolean;
+  onAddMoreSpace: () => void;
   onClose: () => void;
   onImported: (track: StoredCustomTrack) => Promise<void>;
 }
@@ -22,6 +27,11 @@ interface ImportSongModalProps {
 export const ImportSongModal: React.FC<ImportSongModalProps> = ({
   isOpen,
   accentHex,
+  usedSlots,
+  maxSlots,
+  isUnlimited,
+  canExpandMoreSpace,
+  onAddMoreSpace,
   onClose,
   onImported,
 }) => {
@@ -75,8 +85,14 @@ export const ImportSongModal: React.FC<ImportSongModalProps> = ({
     );
   };
 
+  const isAtSpaceLimit = !isUnlimited && usedSlots >= maxSlots;
+
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isAtSpaceLimit) {
+      setError('Song slot limit reached. Tap Add +5 More Space or reach Day 15 for 25+ songs.');
+      return;
+    }
     if (!selectedFile) {
       setError('Select an MP3, WAV, M4A, or audio file from your device.');
       return;
@@ -135,6 +151,22 @@ export const ImportSongModal: React.FC<ImportSongModalProps> = ({
           >
             <X className="w-5 h-5" />
           </button>
+        </div>
+
+        <div className="rounded-xl bg-black border border-white/10 px-3.5 py-2.5 flex items-center justify-between gap-2">
+          <span className="text-xs text-zinc-300 font-mono-tabular">
+            {isUnlimited ? 'Unlimited Slots (Day 15+)' : `Space: ${usedSlots}/${maxSlots} Songs`}
+          </span>
+          {!isUnlimited && canExpandMoreSpace && (
+            <button
+              type="button"
+              onClick={onAddMoreSpace}
+              className="px-2.5 py-1 rounded-full text-[11px] font-bold text-black cursor-pointer"
+              style={{ backgroundColor: accentHex }}
+            >
+              Add +5 More Space
+            </button>
+          )}
         </div>
 
         <input

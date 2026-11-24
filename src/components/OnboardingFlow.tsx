@@ -1,8 +1,7 @@
 import React, { useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
-import { ArrowRight, Flame, TrendingUp } from 'lucide-react';
+import { ArrowRight, Flame, FolderPlus, TrendingUp, WifiOff } from 'lucide-react';
 import { FloatingPuzzlePieces, ZorbLogo } from './ZorbLogo';
-import { REWARD_ASSETS } from '../data/rewards';
 
 interface OnboardingFlowProps {
   accentHex: string;
@@ -136,29 +135,29 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ accentHex, onCom
               className="w-full flex flex-col items-center text-center"
             >
               <div className="grid grid-cols-2 gap-3 w-full max-w-sm mb-7">
-                <div className="rounded-2xl bg-[#0B0D12] border border-white/10 p-2.5 flex flex-col items-center">
-                  <img
-                    src={REWARD_ASSETS.cap}
-                    alt="ZORB Cap Day 15 Reward"
-                    referrerPolicy="no-referrer"
-                    className="w-full aspect-square object-cover rounded-xl mb-2"
-                  />
-                  <span className="text-xs font-semibold text-white">Day 15 · Cap</span>
-                  <span className="text-[11px] text-zinc-400">Consistency King</span>
+                <div className="rounded-2xl bg-[#121212] border border-white/10 p-4 flex flex-col items-center text-center gap-2">
+                  <div
+                    className="w-12 h-12 rounded-xl bg-black border border-white/15 flex items-center justify-center"
+                    style={{ color: accentHex }}
+                  >
+                    <FolderPlus className="w-6 h-6" />
+                  </div>
+                  <span className="text-xs font-bold text-white">Day 15 · 25+ Songs</span>
+                  <span className="text-[11px] text-zinc-400">Unlimited Vault Unlock</span>
                 </div>
                 <div
-                  className="rounded-2xl bg-[#0B0D12] border p-2.5 flex flex-col items-center"
+                  className="rounded-2xl bg-[#121212] border p-4 flex flex-col items-center text-center gap-2"
                   style={{ borderColor: accentHex }}
                 >
-                  <img
-                    src={REWARD_ASSETS.hoodie}
-                    alt="ZORB Hoodie Day 30 Reward"
-                    referrerPolicy="no-referrer"
-                    className="w-full aspect-square object-cover rounded-xl mb-2"
-                  />
-                  <span className="text-xs font-semibold text-white">Day 30 · Hoodie</span>
+                  <div
+                    className="w-12 h-12 rounded-xl bg-black border flex items-center justify-center"
+                    style={{ borderColor: accentHex, color: accentHex }}
+                  >
+                    <WifiOff className="w-6 h-6" />
+                  </div>
+                  <span className="text-xs font-bold text-white">Day 30 · Full Offline</span>
                   <span className="text-[11px]" style={{ color: accentHex }}>
-                    ZORB Legend
+                    Zero Ads Forever
                   </span>
                 </div>
               </div>
@@ -167,10 +166,10 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ accentHex, onCom
                 <Flame className="w-4 h-4" /> 10 Min Daily Streak
               </div>
               <h2 className="font-display text-4xl sm:text-5xl font-extrabold tracking-tight uppercase text-balance">
-                30 Days = Legend
+                30 Days = Full Offline
               </h2>
               <p className="text-sm sm:text-base text-zinc-400 max-w-md mt-3 leading-relaxed">
-                Unlock new theme colors every 3 days. Hit Day 15 for the ZORB Cap, Day 30 for the ZORB Hoodie, and push to Day 200.
+                Unlock Coins, Themes &amp; Extra Song Space as you build your streak. Hit Day 15 to import 25+ songs and Day 30 for permanent ad-free Offline Mode.
               </p>
             </motion.div>
           )}

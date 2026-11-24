@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { Clock, Download, Heart, ListPlus, MoreVertical, Pause, Play, Search, Trash2, X } from 'lucide-react';
+import { Clock, Download, EyeOff, Heart, ListPlus, ListStart, MoreVertical, Pause, Play, Search, Trash2, X } from 'lucide-react';
 import { formatTime } from '../data/songs';
 import { MusicPreference, Playlist, Song } from '../types/zorb';
 import { CoverArt, LiveEqualizerBars } from './CoverArt';
@@ -10,10 +10,13 @@ interface SearchScreenProps {
   searchHistory: string[];
   likedSongIds: string[];
   offlineSongIds: string[];
+  excludedShuffleSongIds: string[];
   currentSong: Song | null;
   isPlaying: boolean;
   accentHex: string;
   onPlaySong: (song: Song) => void;
+  onPlayNext: (song: Song) => void;
+  onToggleExcludeShuffle: (songId: string) => void;
   onTogglePlay: () => void;
   onAddSearchHistory: (term: string) => void;
   onClearSearchHistory: () => void;
@@ -38,10 +41,13 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
   searchHistory,
   likedSongIds,
   offlineSongIds,
+  excludedShuffleSongIds,
   currentSong,
   isPlaying,
   accentHex,
   onPlaySong,
+  onPlayNext,
+  onToggleExcludeShuffle,
   onTogglePlay,
   onAddSearchHistory,
   onClearSearchHistory,
@@ -202,6 +208,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
               const active = currentSong?.id === song.id;
               const liked = likedSongIds.includes(song.id);
               const offline = offlineSongIds.includes(song.id);
+              const excludedInShuffle = excludedShuffleSongIds.includes(song.id);
               const menuOpen = menuSongId === song.id;
 
               return (
@@ -261,6 +268,31 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
 
                     {menuOpen && (
                       <div className="absolute right-0 top-11 z-30 w-52 rounded-2xl bg-[#181818] border border-white/15 p-1.5 shadow-2xl flex flex-col gap-0.5">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setMenuSongId(null);
+                            onPlayNext(song);
+                          }}
+                          className="w-full px-3 py-2.5 rounded-xl hover:bg-white/10 text-left text-xs font-semibold text-white flex items-center gap-2.5 cursor-pointer"
+                        >
+                          <ListStart className="w-4 h-4" style={{ color: accentHex }} />
+                          Play Next
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setMenuSongId(null);
+                            onToggleExcludeShuffle(song.id);
+                          }}
+                          className="w-full px-3 py-2.5 rounded-xl hover:bg-white/10 text-left text-xs font-semibold text-white flex items-center gap-2.5 cursor-pointer"
+                        >
+                          <EyeOff
+                            className="w-4 h-4"
+                            style={{ color: excludedInShuffle ? '#f59e0b' : accentHex }}
+                          />
+                          {excludedInShuffle ? 'Allow in Shuffle' : 'Skip in Shuffle'}
+                        </button>
                         <button
                           type="button"
                           onClick={() => {

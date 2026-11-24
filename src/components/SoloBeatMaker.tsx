@@ -33,6 +33,7 @@ import {
   renderBeatToWavBlob,
   triggerPadSound,
 } from '../utils/beatSynth';
+import { hapticPad } from '../utils/haptics';
 import { PuzzlePieceIcon } from './ZorbLogo';
 
 interface SoloBeatMakerProps {
@@ -318,6 +319,7 @@ export const SoloBeatMaker: React.FC<SoloBeatMakerProps> = ({
   // Long press (450ms) -> Remove from loop
   const playSinglePadNow = (padId: BeatPadId) => {
     onPauseMainPlayer();
+    hapticPad();
     const { ctx, master } = ensureMasterGain();
     const stepSec = 60 / bpm / 2;
     triggerPadSound(ctx, master, padId, mood, ctx.currentTime, Math.max(0, currentStep), stepSec);
@@ -341,6 +343,7 @@ export const SoloBeatMaker: React.FC<SoloBeatMakerProps> = ({
     longPressTimerRef.current = window.setTimeout(() => {
       longPressTriggeredRef.current = true;
       if (isPadActiveInPattern(patternRef.current, padId)) {
+        hapticPad();
         setPattern((prev) => ({
           ...prev,
           [padId]: Array(8).fill(false),

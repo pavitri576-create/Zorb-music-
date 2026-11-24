@@ -2,15 +2,19 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react';
 import { Flame, Home, Library, Search, User } from 'lucide-react';
 import { INITIAL_SONGS } from './data/songs';
-import { getThemeById } from './data/themes';
+import { getThemeById, THEME_OPTIONS } from './data/themes';
 import {
   AppScreen,
+  AudioSpeedMode,
   BeatMood,
   BeatPattern,
+  CoinShopItemId,
+  EqPresetId,
   LibraryTab,
   Playlist,
   RepeatMode,
   RewardMilestone,
+  SleepTimerMode,
   Song,
   UserProfile,
   ZorbPersistedState,
@@ -19,8 +23,15 @@ import {
   cacheSongOffline,
   clearPersistedState,
   createDefaultState,
+  formatOfflineLeft,
   getLocalDateKey,
+  hasPermanentOfflineReward,
+  hasUnlimitedImportReward,
+  isOfflineAdPassActive,
+  isUrlCachedOffline,
   loadPersistedState,
+  OFFLINE_AD_UNLOCK_MS,
+  PRE_DAY15_MAX_IMPORT_SPACE,
   removeSongOfflineCache,
   savePersistedState,
   STREAK_DAILY_THRESHOLD_SECONDS,
@@ -32,6 +43,20 @@ import {
   saveCustomTrack,
   StoredCustomTrack,
 } from './utils/customTracksDb';
+import {
+  processScannedAudioFiles,
+  scanSavedMusicDirectorySilently,
+} from './utils/musicScanner';
+import { applyEqPreset, applyPlaybackSpeed } from './utils/audioFx';
+import { clipSongSegmentToWav } from './utils/audioClipper';
+import {
+  hapticError,
+  hapticMilestone,
+  hapticSkip,
+  hapticTap,
+  hapticToggle,
+  setHapticsEnabled,
+} from './utils/haptics';
 import { SplashScreen } from './components/SplashScreen';
 import { OnboardingFlow } from './components/OnboardingFlow';
 import { ProfileSetup } from './components/ProfileSetup';
@@ -40,12 +65,16 @@ import { SearchScreen } from './components/SearchScreen';
 import { SoloBeatMaker } from './components/SoloBeatMaker';
 import { LibraryScreen } from './components/LibraryScreen';
 import { RewardsScreen } from './components/RewardsScreen';
-import { ProfileScreen } from './components/ProfileScreen';
+import { DeveloperAction, ProfileScreen } from './components/ProfileScreen';
 import { MiniPlayer, SystemMiniPlayerBar } from './components/MiniPlayer';
 import { FullPlayerModal } from './components/FullPlayerModal';
+import { LiveWrappedModal } from './components/LiveWrappedModal';
 import { AddToPlaylistModal, CreatePlaylistModal } from './components/PlaylistModals';
 import { ImportSongModal } from './components/ImportSongModal';
 import { AdInterstitialModal } from './components/AdInterstitialModal';
+import { MusicScanModal } from './components/MusicScanModal';
+import { OfflineGateModal } from './components/OfflineGateModal';
+import { DemoAdPlayerModal } from './components/DemoAdPlayerModal';
 import { PuzzlePieceIcon, ZorbLogo } from './components/ZorbLogo';
 
 export default function App() {
@@ -72,21 +101,72 @@ export default function App() {
   const [duration, setDuration] = useState(0);
   const [shuffle, setShuffle] = useState(false);
   const [repeatMode, setRepeatMode] = useState<RepeatMode>('off');
+  const [speedMode, setSpeedMode] = useState<AudioSpeedMode>('normal');
+  const [eqPreset, setEqPreset] = useState<EqPresetId>('flat');
+  const [sleepTimerMode, setSleepTimerMode] = useState<SleepTimerMode>('off');
+  const [sleepRemainingSec, setSleepRemainingSec] = useState<number | null>(null);
+  const [loopA, setLoopA] = useState<number | null>(null);
+  const [loopB, setLoopB] = useState<number | null>(null);
   const [fullPlayerOpen, setFullPlayerOpen] = useState(false);
+  const [wrappedOpen, setWrappedOpen] = useState(false);
   const [showSystemBar, setShowSystemBar] = useState(false);
 
   // Modals & Toasts
   const [playlistPickerSong, setPlaylistPickerSong] = useState<Song | null>(null);
   const [createPlaylistOpen, setCreatePlaylistOpen] = useState(false);
   const [importSongOpen, setImportSongOpen] = useState(false);
+  const [musicScanOpen, setMusicScanOpen] = useState(false);
   const [adModalOpen, setAdModalOpen] = useState(false);
+  const [offlineGateMode, setOfflineGateMode] = useState<'offline-prompt' | 'forced-reconnect-ad' | null>(null);
+  const [offlineAdPlayerOpen, setOfflineAdPlayerOpen] = useState(false);
   const [createPlaylistInitialSongId, setCreatePlaylistInitialSongId] = useState<string | undefined>(undefined);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [dopamineGainToast, setDopamineGainToast] = useState<number | null>(null);
 
+  // Network & Offline Pass timers
+  const [isOnline, setIsOnline] = useState<boolean>(() =>
+    typeof navigator !== 'undefined' ? navigator.onLine : true
+  );
+  const [nowMs, setNowMs] = useState<number>(() => Date.now());
+  const [customTracksLoaded, setCustomTracksLoaded] = useState(false);
+
   const lastTickTimeRef = useRef<number>(0);
-  const shownOfflineToastRef = useRef<boolean>(false);
+  const dismissedOfflinePromptRef = useRef<boolean>(false);
+  const startupScanCheckedRef = useRef<boolean>(false);
+  const prevOfflinePassActiveRef = useRef<boolean>(false);
+  const crossfadeTriggeredRef = useRef<boolean>(false);
+  const fadeInTimerRef = useRef<number | null>(null);
   const currentTheme = useMemo(() => getThemeById(state.themeId), [state.themeId]);
+
+  const usedImportSlots = useMemo(
+    () => customSongs.filter((s) => s.sourceType !== 'beat').length,
+    [customSongs]
+  );
+  const isUnlimitedImports = useMemo(() => hasUnlimitedImportReward(state), [state]);
+  const maxImportSlots = isUnlimitedImports ? 9999 : state.importSpaceLimit;
+  const canExpandMoreSpace = !isUnlimitedImports && state.importSpaceLimit < PRE_DAY15_MAX_IMPORT_SPACE;
+
+  const hasPermanentOffline = useMemo(() => hasPermanentOfflineReward(state), [state]);
+  const offlinePassActive = useMemo(
+    () => isOfflineAdPassActive(state, nowMs),
+    [state, nowMs]
+  );
+  const offlineLeftText = useMemo(
+    () => (hasPermanentOffline ? 'FULL OFFLINE' : formatOfflineLeft(state.offlineUnlockedUntil, nowMs)),
+    [hasPermanentOffline, state.offlineUnlockedUntil, nowMs]
+  );
+
+  const nextLockedTheme = useMemo(
+    () =>
+      THEME_OPTIONS.find(
+        (t) =>
+          t.unlockDay > 0 &&
+          state.streak.bestStreak < t.unlockDay &&
+          state.streak.currentStreak < t.unlockDay &&
+          !(state.unlockedThemeIds || []).includes(t.id)
+      ) || null,
+    [state.streak.bestStreak, state.streak.currentStreak, state.unlockedThemeIds]
+  );
 
   const showToast = useCallback((msg: string) => {
     setToastMessage(msg);
@@ -98,22 +178,103 @@ export default function App() {
     return () => clearTimeout(t);
   }, [toastMessage]);
 
+  // Listen to browser online / offline events (App never crashes or shows "Disconnected")
   useEffect(() => {
-    if (!showSplash && onboardingDone && state.hasOnboarded && !shownOfflineToastRef.current) {
-      shownOfflineToastRef.current = true;
-      showToast('Offline Mode');
-    }
-  }, [showSplash, onboardingDone, state.hasOnboarded, showToast]);
+    const handleOnline = () => {
+      setIsOnline(true);
+      setNowMs(Date.now());
+      dismissedOfflinePromptRef.current = false;
+    };
+    const handleOffline = () => {
+      setIsOnline(false);
+      setNowMs(Date.now());
+      dismissedOfflinePromptRef.current = false;
+    };
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
 
-  // Persist state on changes
+  // Keep offline countdown timer accurate across app focus & 10s ticks
+  useEffect(() => {
+    const tick = () => setNowMs(Date.now());
+    const id = window.setInterval(tick, 10000);
+    window.addEventListener('focus', tick);
+    return () => {
+      window.clearInterval(id);
+      window.removeEventListener('focus', tick);
+    };
+  }, []);
+
+  // Re-arm offline prompt if a 6h timer just expired while offline
+  useEffect(() => {
+    if (prevOfflinePassActiveRef.current && !offlinePassActive && !isOnline) {
+      dismissedOfflinePromptRef.current = false;
+    }
+    prevOfflinePassActiveRef.current = offlinePassActive;
+  }, [offlinePassActive, isOnline]);
+
+  // Offline Mode + Reconnect Skipped-Ad Enforcement Gate
+  useEffect(() => {
+    if (showSplash || !onboardingDone || !state.hasOnboarded) return;
+    if (hasPermanentOffline) {
+      if (offlineGateMode) setOfflineGateMode(null);
+      return;
+    }
+    if (offlineAdPlayerOpen) return;
+
+    if (isOnline && state.pendingSkippedAd) {
+      setOfflineGateMode('forced-reconnect-ad');
+      return;
+    }
+
+    if (!isOnline && !offlinePassActive && !dismissedOfflinePromptRef.current) {
+      setOfflineGateMode('offline-prompt');
+      return;
+    }
+
+    if (offlinePassActive && offlineGateMode === 'offline-prompt') {
+      setOfflineGateMode(null);
+    }
+  }, [
+    showSplash,
+    onboardingDone,
+    state.hasOnboarded,
+    state.pendingSkippedAd,
+    hasPermanentOffline,
+    isOnline,
+    offlinePassActive,
+    offlineAdPlayerOpen,
+    offlineGateMode,
+  ]);
+
+  // Persist state on changes & sync haptics preference
   useEffect(() => {
     savePersistedState(state);
+    setHapticsEnabled(state.hapticsEnabled !== false);
   }, [state]);
+
+  // Global tactile click haptic for every button interaction across screens & modals
+  useEffect(() => {
+    const onDocumentClick = (e: MouseEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (!target) return;
+      const btn = target.closest('button, [role="button"]') as HTMLButtonElement | null;
+      if (!btn || btn.disabled) return;
+      hapticTap();
+    };
+    document.addEventListener('click', onDocumentClick);
+    return () => document.removeEventListener('click', onDocumentClick);
+  }, []);
 
   // Load device-imported audio tracks from IndexedDB on mount
   useEffect(() => {
     loadCustomTracks().then((tracks) => {
       setCustomSongs(tracks);
+      setCustomTracksLoaded(true);
       const lastId = loadPersistedState().lastPlayedSongId;
       if (lastId) {
         const match = tracks.find((t) => t.id === lastId);
@@ -139,11 +300,15 @@ export default function App() {
     return () => document.removeEventListener('visibilitychange', onVisibility);
   }, [currentSong, isPlaying]);
 
-  // Log play history helper (strictly last 5 unique songs, newest first)
+  // Log play history helper (strictly last 5 unique songs, newest first) + play counts for Live Wrapped
   const recordHistory = useCallback((songId: string) => {
     setState((prev) => ({
       ...prev,
       lastPlayedSongId: songId,
+      songPlayCounts: {
+        ...(prev.songPlayCounts || {}),
+        [songId]: ((prev.songPlayCounts || {})[songId] || 0) + 1,
+      },
       history: [
         { songId, playedAt: new Date().toISOString() },
         ...prev.history.filter((entry) => entry.songId !== songId),
@@ -151,11 +316,19 @@ export default function App() {
     }));
   }, []);
 
-  // Offline Ads counter (triggers 1 interstitial after every 6 completed tracks)
+  // Offline Ads counter (triggers 1 interstitial after every 6 completed tracks, unless Ad-Skip Shield is active)
   const registerCompletedSongForAd = useCallback(() => {
     setState((prev) => {
       const nextCount = (prev.songsPlayedSinceAd || 0) + 1;
       if (nextCount >= 6) {
+        if ((prev.adSkipShields || 0) > 0) {
+          setTimeout(() => showToast('Ad-Skip Shield used — Continuing ad-free!'), 40);
+          return {
+            ...prev,
+            adSkipShields: prev.adSkipShields - 1,
+            songsPlayedSinceAd: 0,
+          };
+        }
         setTimeout(() => {
           if (audioRef.current && !audioRef.current.paused) {
             audioRef.current.pause();
@@ -169,21 +342,106 @@ export default function App() {
         songsPlayedSinceAd: nextCount,
       };
     });
-  }, []);
+  }, [showToast]);
+
+  const handleScanFiles = useCallback(
+    async (files: File[]): Promise<{ added: number; duplicates: number; blockedByLimit: number }> => {
+      const remaining = isUnlimitedImports ? 9999 : Math.max(0, state.importSpaceLimit - usedImportSlots);
+      const { addedTracks, skippedDuplicates, skippedByLimit } = await processScannedAudioFiles(
+        files,
+        allSongs,
+        remaining
+      );
+      if (addedTracks.length > 0) {
+        for (const track of addedTracks) {
+          await saveCustomTrack(track);
+        }
+        const newSongs: CustomSongWithFlag[] = addedTracks.map((track) => ({
+          id: track.id,
+          title: track.title,
+          artist: track.artist,
+          cover: track.cover,
+          audioUrl: URL.createObjectURL(track.audioBlob),
+          duration: track.duration,
+          genre: 'Phonk',
+          tags: track.tags,
+          bpm: track.bpm,
+          isCustomImported: true,
+          sourceType: 'import',
+        }));
+        setCustomSongs((prev) => [...newSongs, ...prev]);
+        showToast(`Added ${addedTracks.length} track(s) to Library`);
+      }
+      return {
+        added: addedTracks.length,
+        duplicates: skippedDuplicates,
+        blockedByLimit: skippedByLimit,
+      };
+    },
+    [allSongs, isUnlimitedImports, showToast, state.importSpaceLimit, usedImportSlots]
+  );
+
+  // Silent re-scan of saved music folder + first-time "Allow ZORB to find your music" prompt
+  useEffect(() => {
+    if (showSplash || !onboardingDone || !state.hasOnboarded || !customTracksLoaded) return;
+    if (startupScanCheckedRef.current) return;
+    startupScanCheckedRef.current = true;
+
+    scanSavedMusicDirectorySilently().then((files) => {
+      if (files && files.length > 0) {
+        handleScanFiles(files);
+      }
+    });
+
+    if (!state.hasPromptedMusicScan && !offlineGateMode) {
+      setState((prev) => ({ ...prev, hasPromptedMusicScan: true }));
+      const t = window.setTimeout(() => setMusicScanOpen(true), 350);
+      return () => window.clearTimeout(t);
+    }
+  }, [showSplash, onboardingDone, state.hasOnboarded, state.hasPromptedMusicScan, customTracksLoaded, offlineGateMode, handleScanFiles]);
 
   const playSong = useCallback(
-    (song: Song, customQueue?: Song[]) => {
+    async (song: Song, customQueue?: Song[], options?: { fadeInSeconds?: number }) => {
       if (customQueue) setQueue(customQueue);
       const audio = audioRef.current;
       if (!audio) return;
 
+      const isLocalTrack =
+        song.id.startsWith('custom-') ||
+        song.id.startsWith('beat-') ||
+        state.offlineSongIds.includes(song.id);
+
+      if (!isOnline && !isLocalTrack) {
+        const cached = await isUrlCachedOffline(song.audioUrl);
+        if (!cached) {
+          hapticError();
+          showToast('Offline - Saved songs only');
+          return;
+        }
+      }
+
+      if (fadeInTimerRef.current !== null) {
+        window.clearInterval(fadeInTimerRef.current);
+        fadeInTimerRef.current = null;
+      }
+
       const isSameSong = currentSong?.id === song.id;
       setCurrentSong(song);
       if (!isSameSong) {
+        setLoopA(null);
+        setLoopB(null);
+        crossfadeTriggeredRef.current = false;
         audio.src = song.audioUrl;
         audio.currentTime = 0;
         setCurrentTime(0);
         lastTickTimeRef.current = 0;
+      }
+
+      const fadeSec = options?.fadeInSeconds || 0;
+      if (fadeSec > 0 && !isSameSong) {
+        audio.volume = 0.08;
+      } else {
+        audio.volume = 1;
       }
 
       audio
@@ -191,17 +449,45 @@ export default function App() {
         .then(() => {
           setIsPlaying(true);
           recordHistory(song.id);
+          if (fadeSec > 0 && !isSameSong) {
+            const steps = Math.max(8, Math.round(fadeSec * 16));
+            let step = 0;
+            fadeInTimerRef.current = window.setInterval(() => {
+              step += 1;
+              if (!audioRef.current) {
+                if (fadeInTimerRef.current !== null) {
+                  window.clearInterval(fadeInTimerRef.current);
+                  fadeInTimerRef.current = null;
+                }
+                return;
+              }
+              const nextVol = Math.min(1, 0.08 + (0.92 * step) / steps);
+              audioRef.current.volume = nextVol;
+              if (step >= steps) {
+                if (fadeInTimerRef.current !== null) {
+                  window.clearInterval(fadeInTimerRef.current);
+                  fadeInTimerRef.current = null;
+                }
+              }
+            }, Math.round((fadeSec * 1000) / steps));
+          }
         })
         .catch(() => {
+          audio.volume = 1;
           setIsPlaying(false);
+          if (!navigator.onLine) {
+            hapticError();
+            showToast('Offline - Saved songs only');
+          }
         });
     },
-    [currentSong, recordHistory]
+    [currentSong, isOnline, recordHistory, showToast, state.offlineSongIds]
   );
 
   const togglePlay = useCallback(() => {
     const audio = audioRef.current;
     if (!audio) return;
+    hapticToggle();
     if (!currentSong) {
       playSong(INITIAL_SONGS[0]);
       return;
@@ -220,25 +506,35 @@ export default function App() {
     }
   }, [currentSong, isPlaying, playSong]);
 
-  const handleNext = useCallback(() => {
-    if (queue.length === 0) return;
-    if (!currentSong) {
-      playSong(queue[0]);
-      return;
-    }
-    if (shuffle && queue.length > 1) {
-      const candidates = queue.filter((s) => s.id !== currentSong.id);
-      const pick = candidates[Math.floor(Math.random() * candidates.length)];
-      playSong(pick);
-      return;
-    }
-    const idx = queue.findIndex((s) => s.id === currentSong.id);
-    const nextIdx = (idx + 1) % queue.length;
-    playSong(queue[nextIdx]);
-  }, [queue, currentSong, shuffle, playSong]);
+  const handleNext = useCallback(
+    (fadeInSeconds = 0) => {
+      if (queue.length === 0) return;
+      hapticSkip();
+      if (!currentSong) {
+        playSong(queue[0], undefined, fadeInSeconds > 0 ? { fadeInSeconds } : undefined);
+        return;
+      }
+      if (shuffle && queue.length > 1) {
+        const excluded = state.excludedShuffleSongIds || [];
+        const preferred = queue.filter(
+          (s) => s.id !== currentSong.id && !excluded.includes(s.id)
+        );
+        const candidates =
+          preferred.length > 0 ? preferred : queue.filter((s) => s.id !== currentSong.id);
+        const pick = candidates[Math.floor(Math.random() * candidates.length)];
+        playSong(pick, undefined, fadeInSeconds > 0 ? { fadeInSeconds } : undefined);
+        return;
+      }
+      const idx = queue.findIndex((s) => s.id === currentSong.id);
+      const nextIdx = (idx + 1) % queue.length;
+      playSong(queue[nextIdx], undefined, fadeInSeconds > 0 ? { fadeInSeconds } : undefined);
+    },
+    [queue, currentSong, shuffle, state.excludedShuffleSongIds, playSong]
+  );
 
   const handlePrev = useCallback(() => {
     const audio = audioRef.current;
+    hapticSkip();
     if (audio && audio.currentTime > 3) {
       audio.currentTime = 0;
       setCurrentTime(0);
@@ -263,11 +559,12 @@ export default function App() {
     setCurrentTime(time);
   }, []);
 
-  // Credit real listening seconds -> dopamine + streak progress
+  // Credit real listening seconds -> dopamine + streak progress + hourly stats for Live Wrapped
   const creditListenSeconds = useCallback(
     (deltaSeconds: number) => {
       if (deltaSeconds <= 0) return;
       const todayKey = getLocalDateKey();
+      const hour = new Date().getHours();
 
       setState((prev) => {
         const prevTodaySec = prev.streak.dailyListenSeconds[todayKey] || 0;
@@ -293,6 +590,7 @@ export default function App() {
         const nextDopamine = Math.max(prev.dopamineScore, dopamineFromTime);
 
         if (justCompletedToday) {
+          hapticMilestone();
           setTimeout(() => showToast(`🔥 Day ${nextStreakCount} Streak Locked!`), 50);
         }
 
@@ -300,6 +598,10 @@ export default function App() {
           ...prev,
           totalListenSeconds: nextTotalSeconds,
           dopamineScore: nextDopamine,
+          listeningHours: {
+            ...(prev.listeningHours || {}),
+            [hour]: ((prev.listeningHours || {})[hour] || 0) + deltaSeconds,
+          },
           streak: {
             ...prev.streak,
             currentStreak: nextStreakCount,
@@ -317,7 +619,7 @@ export default function App() {
     [showToast]
   );
 
-  // Sync MediaSession API for OS / browser lock-screen & notification bar controls
+  // Sync MediaSession API for OS / browser lock-screen & notification bar background controls
   useEffect(() => {
     if (!('mediaSession' in navigator) || !currentSong) return;
     try {
@@ -327,6 +629,7 @@ export default function App() {
         album: 'ZORB — Z = M × D²',
         artwork: [{ src: currentSong.cover, sizes: '512x512', type: 'image/jpeg' }],
       });
+      navigator.mediaSession.playbackState = isPlaying ? 'playing' : 'paused';
       navigator.mediaSession.setActionHandler('play', () => togglePlay());
       navigator.mediaSession.setActionHandler('pause', () => togglePlay());
       navigator.mediaSession.setActionHandler('previoustrack', () => handlePrev());
@@ -334,15 +637,149 @@ export default function App() {
       navigator.mediaSession.setActionHandler('seekto', (details) => {
         if (typeof details.seekTime === 'number') handleSeek(details.seekTime);
       });
+      navigator.mediaSession.setActionHandler('seekbackward', (details) => {
+        const offset = details.seekOffset || 10;
+        if (audioRef.current) handleSeek(Math.max(0, audioRef.current.currentTime - offset));
+      });
+      navigator.mediaSession.setActionHandler('seekforward', (details) => {
+        const offset = details.seekOffset || 10;
+        if (audioRef.current) {
+          const max = Number.isFinite(audioRef.current.duration) ? audioRef.current.duration : currentTime + offset;
+          handleSeek(Math.min(max, audioRef.current.currentTime + offset));
+        }
+      });
     } catch {
       // Ignore unsupported MediaSession actions
     }
-  }, [currentSong, togglePlay, handlePrev, handleNext, handleSeek]);
+  }, [currentSong, isPlaying, togglePlay, handlePrev, handleNext, handleSeek, currentTime]);
+
+  useEffect(() => {
+    if (!('mediaSession' in navigator) || !currentSong) return;
+    try {
+      navigator.mediaSession.playbackState = isPlaying ? 'playing' : 'paused';
+      if (
+        typeof navigator.mediaSession.setPositionState === 'function' &&
+        duration > 0 &&
+        Number.isFinite(duration)
+      ) {
+        navigator.mediaSession.setPositionState({
+          duration,
+          playbackRate: 1,
+          position: Math.min(duration, Math.max(0, currentTime)),
+        });
+      }
+    } catch {
+      // Ignore unsupported setPositionState
+    }
+  }, [currentSong, isPlaying, currentTime, duration]);
+
+  // Sync Phonk Playback Speed & EQ Preset to <audio> element
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    applyPlaybackSpeed(audio, speedMode);
+  }, [speedMode, currentSong]);
+
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    applyEqPreset(audio, eqPreset);
+  }, [eqPreset, isPlaying]);
+
+  // Sleep Timer Countdown (15m / 30m / 60m)
+  useEffect(() => {
+    if (sleepTimerMode === 'off' || sleepTimerMode === 'end-of-track') {
+      setSleepRemainingSec(null);
+      return;
+    }
+    const mins = sleepTimerMode === '15m' ? 15 : sleepTimerMode === '30m' ? 30 : 60;
+    setSleepRemainingSec(mins * 60);
+
+    const id = window.setInterval(() => {
+      setSleepRemainingSec((prev) => {
+        if (prev === null) return null;
+        if (prev <= 1) {
+          if (audioRef.current && !audioRef.current.paused) {
+            audioRef.current.pause();
+          }
+          setIsPlaying(false);
+          setSleepTimerMode('off');
+          showToast('Sleep timer paused playback');
+          return null;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, [sleepTimerMode, showToast]);
+
+  // Desktop Keyboard Shortcuts (Space = Play/Pause, Arrows = Seek, Shift+Arrows or N/P = Skip)
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (showSplash || !onboardingDone || !state.hasOnboarded) return;
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.tagName === 'SELECT' ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+
+      if (e.code === 'Space') {
+        e.preventDefault();
+        togglePlay();
+      } else if (e.code === 'ArrowRight') {
+        e.preventDefault();
+        if (e.shiftKey) {
+          handleNext();
+        } else if (audioRef.current) {
+          const max = Number.isFinite(audioRef.current.duration)
+            ? audioRef.current.duration
+            : currentTime + 5;
+          handleSeek(Math.min(max, audioRef.current.currentTime + 5));
+        }
+      } else if (e.code === 'ArrowLeft') {
+        e.preventDefault();
+        if (e.shiftKey) {
+          handlePrev();
+        } else if (audioRef.current) {
+          handleSeek(Math.max(0, audioRef.current.currentTime - 5));
+        }
+      } else if (e.key === 'n' || e.key === 'N') {
+        handleNext();
+      } else if (e.key === 'p' || e.key === 'P') {
+        handlePrev();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [
+    showSplash,
+    onboardingDone,
+    state.hasOnboarded,
+    togglePlay,
+    handleNext,
+    handlePrev,
+    handleSeek,
+    currentTime,
+  ]);
 
   const handleAudioTimeUpdate = () => {
     const audio = audioRef.current;
     if (!audio) return;
     const now = audio.currentTime;
+
+    // A-B Drop Looper check
+    if (loopA !== null && loopB !== null && loopB > loopA + 0.2 && now >= loopB) {
+      audio.currentTime = loopA;
+      lastTickTimeRef.current = loopA;
+      setCurrentTime(loopA);
+      return;
+    }
+
     setCurrentTime(now);
 
     const delta = now - lastTickTimeRef.current;
@@ -353,9 +790,60 @@ export default function App() {
     } else if (delta < 0 || delta >= 5) {
       lastTickTimeRef.current = now;
     }
+
+    // Smooth Crossfade handoff (0-6s)
+    const cfSec = state.crossfadeSeconds || 0;
+    const loopActive = loopA !== null && loopB !== null && loopB > loopA;
+    const trackDur = audio.duration;
+    if (
+      cfSec > 0 &&
+      !loopActive &&
+      repeatMode !== 'one' &&
+      sleepTimerMode !== 'end-of-track' &&
+      Number.isFinite(trackDur) &&
+      trackDur > cfSec + 3 &&
+      queue.length > 1
+    ) {
+      const remaining = trackDur - now;
+      if (remaining <= cfSec && remaining > 0) {
+        audio.volume = Math.max(0.05, Math.min(1, remaining / cfSec));
+        if (remaining <= 0.2 && !crossfadeTriggeredRef.current) {
+          crossfadeTriggeredRef.current = true;
+          setState((prev) => ({
+            ...prev,
+            dopamineScore: prev.dopamineScore + 10,
+          }));
+          creditListenSeconds(60);
+          setDopamineGainToast(10);
+          setTimeout(() => setDopamineGainToast(null), 2200);
+
+          const willTriggerAd =
+            (state.songsPlayedSinceAd || 0) + 1 >= 6 && (state.adSkipShields || 0) === 0;
+          registerCompletedSongForAd();
+          if (willTriggerAd) {
+            setIsPlaying(false);
+            audio.volume = 1;
+            return;
+          }
+          handleNext(Math.min(cfSec, 2.5));
+        }
+      } else if (fadeInTimerRef.current === null && audio.volume < 1) {
+        audio.volume = 1;
+      }
+    } else if (fadeInTimerRef.current === null && audio.volume < 1) {
+      audio.volume = 1;
+    }
   };
 
   const handleAudioEnded = () => {
+    if (audioRef.current) {
+      audioRef.current.volume = 1;
+    }
+    if (crossfadeTriggeredRef.current) {
+      crossfadeTriggeredRef.current = false;
+      return;
+    }
+
     // Song finished: Dopamine +10 animation & Streak time +1 min bonus
     setState((prev) => ({
       ...prev,
@@ -365,7 +853,15 @@ export default function App() {
     setDopamineGainToast(10);
     setTimeout(() => setDopamineGainToast(null), 2200);
 
-    const willTriggerAd = (state.songsPlayedSinceAd || 0) + 1 >= 6;
+    if (sleepTimerMode === 'end-of-track') {
+      setSleepTimerMode('off');
+      setIsPlaying(false);
+      showToast('Sleep timer stopped after track');
+      return;
+    }
+
+    const willTriggerAd =
+      (state.songsPlayedSinceAd || 0) + 1 >= 6 && (state.adSkipShields || 0) === 0;
     registerCompletedSongForAd();
     if (willTriggerAd) {
       setIsPlaying(false);
@@ -382,6 +878,7 @@ export default function App() {
 
   // Likes, Playlists, Offline, Share
   const toggleLike = (songId: string) => {
+    hapticToggle();
     setState((prev) => {
       const exists = prev.likedSongIds.includes(songId);
       return {
@@ -394,6 +891,7 @@ export default function App() {
   };
 
   const toggleOffline = async (song: Song) => {
+    hapticToggle();
     const exists = state.offlineSongIds.includes(song.id);
     if (exists) {
       await removeSongOfflineCache(song.audioUrl);
@@ -411,6 +909,164 @@ export default function App() {
       showToast(ok ? `${song.title} saved for offline playback` : `Saved ${song.title} offline`);
     }
   };
+
+  // True Queue Control: Play Next, Move Queue Item, Remove Queue Item, Skip in Shuffle
+  const handlePlayNext = useCallback(
+    (song: Song) => {
+      hapticSkip();
+      if (!currentSong) {
+        playSong(song, [song, ...allSongs.filter((s) => s.id !== song.id)]);
+        return;
+      }
+      if (song.id === currentSong.id) {
+        showToast('Already playing right now');
+        return;
+      }
+      setQueue((prev) => {
+        const filtered = prev.filter((s) => s.id !== song.id);
+        const curIdx = filtered.findIndex((s) => s.id === currentSong.id);
+        if (curIdx === -1) return [song, ...filtered];
+        return [...filtered.slice(0, curIdx + 1), song, ...filtered.slice(curIdx + 1)];
+      });
+      showToast(`Playing next: ${song.title}`);
+    },
+    [allSongs, currentSong, playSong, showToast]
+  );
+
+  const handleMoveQueueItem = useCallback((index: number, direction: -1 | 1) => {
+    setQueue((prev) => {
+      const targetIdx = index + direction;
+      if (index < 0 || targetIdx < 0 || index >= prev.length || targetIdx >= prev.length) {
+        return prev;
+      }
+      const next = [...prev];
+      const [moved] = next.splice(index, 1);
+      next.splice(targetIdx, 0, moved);
+      return next;
+    });
+  }, []);
+
+  const handleRemoveQueueItem = useCallback(
+    (songId: string) => {
+      if (currentSong?.id === songId) return;
+      setQueue((prev) => prev.filter((s) => s.id !== songId));
+      showToast('Removed from Up Next');
+    },
+    [currentSong, showToast]
+  );
+
+  const handleToggleExcludeShuffle = useCallback(
+    (songId: string) => {
+      hapticToggle();
+      setState((prev) => {
+        const list = prev.excludedShuffleSongIds || [];
+        const exists = list.includes(songId);
+        showToast(exists ? 'Song allowed in Shuffle' : 'Song will skip in Shuffle');
+        return {
+          ...prev,
+          excludedShuffleSongIds: exists
+            ? list.filter((id) => id !== songId)
+            : [...list, songId],
+        };
+      });
+    },
+    [showToast]
+  );
+
+  // Timestamp Bookmarks & Audio Highlight Clipper
+  const handleAddBookmark = useCallback(
+    (time: number, label: string) => {
+      if (!currentSong) return;
+      hapticToggle();
+      const clamped = Math.max(0, time);
+      const newBookmark = {
+        id: `bm-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+        time: clamped,
+        label: label.trim() || 'Drop',
+      };
+      setState((prev) => {
+        const existing = (prev.songBookmarks || {})[currentSong.id] || [];
+        const updated = [...existing, newBookmark].sort((a, b) => a.time - b.time);
+        return {
+          ...prev,
+          songBookmarks: {
+            ...(prev.songBookmarks || {}),
+            [currentSong.id]: updated,
+          },
+        };
+      });
+      showToast(`Pinned "${newBookmark.label}"`);
+    },
+    [currentSong, showToast]
+  );
+
+  const handleDeleteBookmark = useCallback(
+    (bookmarkId: string) => {
+      if (!currentSong) return;
+      setState((prev) => {
+        const existing = (prev.songBookmarks || {})[currentSong.id] || [];
+        return {
+          ...prev,
+          songBookmarks: {
+            ...(prev.songBookmarks || {}),
+            [currentSong.id]: existing.filter((b) => b.id !== bookmarkId),
+          },
+        };
+      });
+    },
+    [currentSong]
+  );
+
+  const handleSaveClipToBeats = useCallback(
+    async (startSec: number, endSec: number) => {
+      if (!currentSong) return;
+      try {
+        const { blob, duration: clipDuration } = await clipSongSegmentToWav(
+          currentSong.audioUrl,
+          startSec,
+          endSec
+        );
+        const id = `beat-${Date.now()}`;
+        const createdAt = new Date().toISOString();
+        const clipTitle = `${currentSong.title} (Clip)`;
+        const stored: StoredCustomTrack = {
+          id,
+          title: clipTitle,
+          artist: currentSong.artist,
+          cover: currentSong.cover,
+          duration: clipDuration,
+          tags: currentSong.tags.length > 0 ? currentSong.tags : ['Phonk'],
+          bpm: currentSong.bpm,
+          audioBlob: blob,
+          createdAt,
+          sourceType: 'beat',
+        };
+        await saveCustomTrack(stored);
+        const objectUrl = URL.createObjectURL(blob);
+        const clipSong: CustomSongWithFlag = {
+          id,
+          title: clipTitle,
+          artist: currentSong.artist,
+          cover: currentSong.cover,
+          audioUrl: objectUrl,
+          duration: clipDuration,
+          genre: 'Phonk',
+          tags: stored.tags,
+          bpm: currentSong.bpm,
+          isCustomImported: true,
+          sourceType: 'beat',
+          createdAt,
+        };
+        setCustomSongs((prev) => [clipSong, ...prev]);
+        hapticMilestone();
+        showToast(`Saved "${clipTitle}" to My Beats!`);
+      } catch {
+        hapticError();
+        showToast('Could not clip this track offline');
+      }
+    },
+    [currentSong, showToast]
+  );
 
   const handleShareSong = async (song: Song) => {
     const shareText = `Listening to ${song.title} by ${song.artist} on ZORB — Z = M × D²`;
@@ -487,16 +1143,197 @@ export default function App() {
   };
 
   const handleClaimReward = (reward: RewardMilestone) => {
+    hapticMilestone();
     setState((prev) => {
       if (prev.claimedRewardIds.includes(reward.id)) return prev;
       return {
         ...prev,
         claimedRewardIds: [...prev.claimedRewardIds, reward.id],
+        coins: (prev.coins || 0) + (reward.coinsBonus || 0),
         themeId: reward.themeId || prev.themeId,
       };
     });
-    showToast(`Claimed: ${reward.badgeName}`);
+    showToast(`Claimed: ${reward.badgeName}${reward.coinsBonus ? ` (+${reward.coinsBonus} Coins)` : ''}`);
   };
+
+  const handleAddMoreSpace = useCallback(() => {
+    setState((prev) => {
+      if (prev.importSpaceLimit >= PRE_DAY15_MAX_IMPORT_SPACE) return prev;
+      hapticMilestone();
+      const nextLimit = Math.min(PRE_DAY15_MAX_IMPORT_SPACE, prev.importSpaceLimit + 5);
+      showToast(`+5 Import Space added (${nextLimit} slots ready)`);
+      return {
+        ...prev,
+        importSpaceLimit: nextLimit,
+      };
+    });
+  }, [showToast]);
+
+  const handleDevAction = useCallback(
+    (action: DeveloperAction) => {
+      const todayKey = getLocalDateKey();
+      switch (action) {
+        case 'add-streak-day':
+          hapticMilestone();
+          setState((prev) => {
+            const next = prev.streak.currentStreak + 1;
+            const completed = prev.streak.completedDates.includes(todayKey)
+              ? prev.streak.completedDates
+              : [...prev.streak.completedDates, todayKey];
+            return {
+              ...prev,
+              streak: {
+                ...prev.streak,
+                currentStreak: next,
+                bestStreak: Math.max(prev.streak.bestStreak, next),
+                totalDays: prev.streak.totalDays + 1,
+                completedDates: completed,
+              },
+            };
+          });
+          showToast('Dev: +1 Day Streak added');
+          break;
+        case 'set-streak-15':
+          hapticMilestone();
+          setState((prev) => ({
+            ...prev,
+            streak: {
+              ...prev.streak,
+              currentStreak: 15,
+              bestStreak: Math.max(prev.streak.bestStreak, 15),
+              totalDays: Math.max(prev.streak.totalDays, 15),
+            },
+          }));
+          showToast('Dev: Streak set to Day 15 (25+ Imports unlocked)');
+          break;
+        case 'set-streak-30':
+          hapticMilestone();
+          setState((prev) => ({
+            ...prev,
+            streak: {
+              ...prev.streak,
+              currentStreak: 30,
+              bestStreak: Math.max(prev.streak.bestStreak, 30),
+              totalDays: Math.max(prev.streak.totalDays, 30),
+            },
+          }));
+          showToast('Dev: Streak set to Day 30 (Full Offline unlocked)');
+          break;
+        case 'reset-streak':
+          setState((prev) => ({
+            ...prev,
+            streak: {
+              ...prev.streak,
+              currentStreak: 0,
+            },
+          }));
+          showToast('Dev: Streak reset to 0');
+          break;
+        case 'add-500-coins':
+          setState((prev) => ({ ...prev, coins: (prev.coins || 0) + 500 }));
+          showToast('Dev: +500 ZORB Coins added');
+          break;
+        case 'add-1000-dopamine':
+          setState((prev) => ({ ...prev, dopamineScore: prev.dopamineScore + 1000 }));
+          showToast('Dev: +1,000 Dopamine added');
+          break;
+        case 'unlock-6h-offline':
+          setNowMs(Date.now());
+          setState((prev) => ({
+            ...prev,
+            offlineUnlockedUntil: Date.now() + OFFLINE_AD_UNLOCK_MS,
+            offlineCarryOnCount: 0,
+            pendingSkippedAd: false,
+          }));
+          setOfflineGateMode(null);
+          showToast('Dev: 6 Hours Offline Mode unlocked');
+          break;
+        case 'clear-offline-locks':
+          dismissedOfflinePromptRef.current = false;
+          setOfflineGateMode(null);
+          setState((prev) => ({
+            ...prev,
+            offlineCarryOnCount: 0,
+            pendingSkippedAd: false,
+            songsPlayedSinceAd: 0,
+          }));
+          showToast('Dev: Ad & Carry-On locks cleared');
+          break;
+        case 'trigger-ad-now':
+          setOfflineAdPlayerOpen(true);
+          break;
+        case 'replay-splash':
+          setShowSplash(true);
+          break;
+        case 'reset-scan-prompt':
+          setState((prev) => ({ ...prev, hasPromptedMusicScan: false }));
+          setMusicScanOpen(true);
+          break;
+      }
+    },
+    [showToast]
+  );
+
+  const handleBuyShopItem = useCallback(
+    (itemId: CoinShopItemId) => {
+      if (itemId === 'offline-6h') {
+        if ((state.coins || 0) < 150 || hasPermanentOffline) {
+          hapticError();
+          return;
+        }
+        hapticMilestone();
+        setNowMs(Date.now());
+        setOfflineGateMode(null);
+        dismissedOfflinePromptRef.current = false;
+        setState((prev) => ({
+          ...prev,
+          coins: (prev.coins || 0) - 150,
+          offlineUnlockedUntil: Date.now() + OFFLINE_AD_UNLOCK_MS,
+          offlineCarryOnCount: 0,
+          pendingSkippedAd: false,
+        }));
+        showToast('Purchased 6-Hour Offline Pass!');
+      } else if (itemId === 'ad-shield') {
+        if ((state.coins || 0) < 100) {
+          hapticError();
+          return;
+        }
+        hapticMilestone();
+        setState((prev) => ({
+          ...prev,
+          coins: (prev.coins || 0) - 100,
+          adSkipShields: (prev.adSkipShields || 0) + 1,
+        }));
+        showToast('Purchased +1 Ad-Skip Shield!');
+      } else if (itemId === 'extra-space-5') {
+        if ((state.coins || 0) < 200 || !canExpandMoreSpace) {
+          hapticError();
+          return;
+        }
+        hapticMilestone();
+        setState((prev) => ({
+          ...prev,
+          coins: (prev.coins || 0) - 200,
+          importSpaceLimit: Math.min(PRE_DAY15_MAX_IMPORT_SPACE, prev.importSpaceLimit + 5),
+        }));
+        showToast('Purchased +5 Song Import Space!');
+      } else if (itemId === 'unlock-next-theme') {
+        if ((state.coins || 0) < 250 || !nextLockedTheme) {
+          hapticError();
+          return;
+        }
+        hapticMilestone();
+        setState((prev) => ({
+          ...prev,
+          coins: (prev.coins || 0) - 250,
+          unlockedThemeIds: [...(prev.unlockedThemeIds || []), nextLockedTheme.id],
+          themeId: nextLockedTheme.id,
+        }));
+        showToast(`Unlocked & Equipped ${nextLockedTheme.name}!`);
+      }
+    },
+    [state.coins, hasPermanentOffline, canExpandMoreSpace, nextLockedTheme, showToast]
+  );
 
   const sendReminderNotification = useCallback(() => {
     const title = 'ZORB — Z = M × D²';
@@ -643,6 +1480,7 @@ export default function App() {
       dopamineScore: prev.dopamineScore + 50,
     }));
     registerCompletedSongForAd();
+    hapticMilestone();
     showToast(`Saved "${payload.title}" offline · +50 DP`);
   };
 
@@ -726,6 +1564,12 @@ export default function App() {
           }
         }}
         onEnded={handleAudioEnded}
+        onError={() => {
+          setIsPlaying(false);
+          if (!navigator.onLine) {
+            showToast('Offline - Saved songs only');
+          }
+        }}
       />
 
       {/* Top System Mini-Player Notification Bar (when minimized / backgrounded) */}
@@ -740,7 +1584,7 @@ export default function App() {
               setFullPlayerOpen(true);
             }}
             onTogglePlay={togglePlay}
-            onNext={handleNext}
+            onNext={() => handleNext()}
             onDismiss={() => setShowSystemBar(false)}
           />
         )}
@@ -903,11 +1747,7 @@ export default function App() {
         </header>
 
         {/* Scrollable Screen Container with Slide + Fade Transitions */}
-        <main
-          className={`flex-1 w-full max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 pt-5 ${
-            currentSong ? 'pb-36 lg:pb-28' : 'pb-24 lg:pb-10'
-          }`}
-        >
+        <main className="flex-1 w-full max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 pt-5 pb-36 lg:pb-28">
           <AnimatePresence mode="wait">
             <motion.div
               key={activeScreen}
@@ -923,8 +1763,13 @@ export default function App() {
                   songs={allSongs}
                   playlists={state.playlists}
                   history={state.history}
+                  offlineSongIds={state.offlineSongIds}
                   currentSong={currentSong}
                   isPlaying={isPlaying}
+                  isOnline={isOnline}
+                  hasPermanentOffline={hasPermanentOffline}
+                  offlinePassActive={offlinePassActive}
+                  offlineLeftText={offlineLeftText}
                   likedSongIds={state.likedSongIds}
                   dopamineScore={state.dopamineScore}
                   streak={state.streak}
@@ -944,7 +1789,11 @@ export default function App() {
                   onOpenRewards={() => setActiveScreen('rewards')}
                   onOpenBeatMaker={() => setActiveScreen('beat-maker')}
                   onOpenProfile={() => setActiveScreen('profile')}
+                  onOpenWrapped={() => setWrappedOpen(true)}
+                  onPlayNext={handlePlayNext}
+                  onOpenAutoScan={() => setMusicScanOpen(true)}
                   onOpenImportSong={() => setImportSongOpen(true)}
+                  onOpenWatchOfflineAd={() => setOfflineAdPlayerOpen(true)}
                 />
               )}
 
@@ -955,6 +1804,7 @@ export default function App() {
                   searchHistory={state.searchHistory}
                   likedSongIds={state.likedSongIds}
                   offlineSongIds={state.offlineSongIds}
+                  excludedShuffleSongIds={state.excludedShuffleSongIds || []}
                   currentSong={currentSong}
                   isPlaying={isPlaying}
                   accentHex={currentTheme.hex}
@@ -962,6 +1812,8 @@ export default function App() {
                     playSong(song, allSongs);
                     setFullPlayerOpen(true);
                   }}
+                  onPlayNext={handlePlayNext}
+                  onToggleExcludeShuffle={handleToggleExcludeShuffle}
                   onTogglePlay={togglePlay}
                   onAddSearchHistory={(term) =>
                     setState((prev) => ({
@@ -1006,16 +1858,25 @@ export default function App() {
                   songs={allSongs}
                   likedSongIds={state.likedSongIds}
                   offlineSongIds={state.offlineSongIds}
+                  excludedShuffleSongIds={state.excludedShuffleSongIds || []}
                   playlists={state.playlists}
                   history={state.history}
                   currentSong={currentSong}
+                  isPlaying={isPlaying}
+                  isOnline={isOnline}
+                  usedImportSlots={usedImportSlots}
+                  maxImportSlots={maxImportSlots}
+                  isUnlimitedImports={isUnlimitedImports}
+                  canExpandMoreSpace={canExpandMoreSpace}
                   accentHex={currentTheme.hex}
                   onChangeTab={setLibraryTab}
                   onSelectPlaylist={setSelectedPlaylistId}
-                  onPlaySong={(song) => {
-                    playSong(song, allSongs);
+                  onPlaySong={(song, customQueue) => {
+                    playSong(song, customQueue || allSongs);
                     setFullPlayerOpen(true);
                   }}
+                  onPlayNext={handlePlayNext}
+                  onToggleExcludeShuffle={handleToggleExcludeShuffle}
                   onPlayPlaylist={(pl) => {
                     const plSongs = pl.songIds
                       .map((id) => allSongs.find((s) => s.id === id))
@@ -1032,7 +1893,9 @@ export default function App() {
                     setCreatePlaylistInitialSongId(undefined);
                     setCreatePlaylistOpen(true);
                   }}
+                  onOpenAutoScan={() => setMusicScanOpen(true)}
                   onOpenImportSong={() => setImportSongOpen(true)}
+                  onAddMoreSpace={handleAddMoreSpace}
                   onOpenBeatMaker={() => setActiveScreen('beat-maker')}
                   onDeleteCustomSong={handleDeleteCustomSong}
                   onRemoveSongFromPlaylist={handleRemoveSongFromPlaylist}
@@ -1045,9 +1908,18 @@ export default function App() {
               {activeScreen === 'rewards' && (
                 <RewardsScreen
                   streak={state.streak}
+                  coins={state.coins || 0}
+                  adSkipShields={state.adSkipShields || 0}
                   claimedRewardIds={state.claimedRewardIds}
+                  importSpaceLimit={state.importSpaceLimit}
+                  usedImportCount={usedImportSlots}
+                  isUnlimitedImports={isUnlimitedImports}
+                  hasPermanentOffline={hasPermanentOffline}
+                  nextLockedThemeName={nextLockedTheme ? nextLockedTheme.name : null}
                   accentHex={currentTheme.hex}
                   onClaimReward={handleClaimReward}
+                  onAddMoreSpace={handleAddMoreSpace}
+                  onBuyShopItem={handleBuyShopItem}
                 />
               )}
 
@@ -1058,10 +1930,30 @@ export default function App() {
                   accentHex={currentTheme.hex}
                   totalListenSeconds={state.totalListenSeconds}
                   dopamineScore={state.dopamineScore}
+                  coins={state.coins || 0}
                   streak={state.streak}
                   playlists={state.playlists}
                   claimedRewardIds={state.claimedRewardIds}
+                  unlockedThemeIds={state.unlockedThemeIds || []}
                   notificationsEnabled={state.notificationsEnabled}
+                  hapticsEnabled={state.hapticsEnabled !== false}
+                  isOnline={isOnline}
+                  hasPermanentOffline={hasPermanentOffline}
+                  offlineStatusText={
+                    hasPermanentOffline
+                      ? 'FULL OFFLINE'
+                      : offlinePassActive
+                      ? `Offline Left: ${offlineLeftText}`
+                      : isOnline
+                      ? 'Online'
+                      : 'Offline - Saved songs only'
+                  }
+                  crossfadeSeconds={state.crossfadeSeconds || 0}
+                  onChangeCrossfade={(sec) => {
+                    setState((prev) => ({ ...prev, crossfadeSeconds: sec }));
+                    showToast(sec === 0 ? 'Crossfade Off' : `Crossfade set to ${sec}s`);
+                  }}
+                  onOpenWrapped={() => setWrappedOpen(true)}
                   onBackHome={() => setActiveScreen('home')}
                   onUpdateProfile={(nextProfile) =>
                     setState((prev) => ({ ...prev, profile: nextProfile }))
@@ -1072,6 +1964,13 @@ export default function App() {
                     showToast(`Theme switched to ${themeObj.name}`);
                   }}
                   onToggleNotifications={handleToggleNotifications}
+                  onToggleHaptics={() => {
+                    const nextEnabled = !(state.hapticsEnabled !== false);
+                    setHapticsEnabled(nextEnabled);
+                    setState((prev) => ({ ...prev, hapticsEnabled: nextEnabled }));
+                    if (nextEnabled) hapticToggle();
+                    showToast(nextEnabled ? 'Haptic feedback enabled' : 'Haptic feedback muted');
+                  }}
                   onSendTestReminder={sendReminderNotification}
                   onRemoveAdsClick={() => showToast('ZORB Premium — Remove Ads coming soon!')}
                   onOpenPlaylist={(plId) => {
@@ -1080,6 +1979,7 @@ export default function App() {
                     setActiveScreen('library');
                   }}
                   onOpenRewards={() => setActiveScreen('rewards')}
+                  onDevAction={handleDevAction}
                   onLogout={handleLogout}
                 />
               )}
@@ -1088,8 +1988,8 @@ export default function App() {
         </main>
       </div>
 
-      {/* Persistent Mini Player (Docked above Bottom Nav on mobile, bottom-right/bar on desktop) */}
-      {currentSong && !fullPlayerOpen && (
+      {/* Permanent Bottom Mini Player (Always visible when Full Player is closed) */}
+      {!fullPlayerOpen && (
         <div className="fixed bottom-16 lg:bottom-4 left-2 right-2 lg:left-68 lg:right-6 z-30 max-w-5xl lg:mx-auto">
           <MiniPlayer
             song={currentSong}
@@ -1099,7 +1999,8 @@ export default function App() {
             accentHex={currentTheme.hex}
             onOpenFull={() => setFullPlayerOpen(true)}
             onTogglePlay={togglePlay}
-            onNext={handleNext}
+            onPrev={handlePrev}
+            onNext={() => handleNext()}
           />
         </div>
       )}
@@ -1134,11 +2035,21 @@ export default function App() {
       <FullPlayerModal
         isOpen={fullPlayerOpen}
         song={currentSong}
+        queue={queue}
         isPlaying={isPlaying}
         currentTime={currentTime}
         duration={duration}
         shuffle={shuffle}
         repeatMode={repeatMode}
+        speedMode={speedMode}
+        eqPreset={eqPreset}
+        crossfadeSeconds={state.crossfadeSeconds || 0}
+        sleepTimerMode={sleepTimerMode}
+        sleepRemainingSec={sleepRemainingSec}
+        loopA={loopA}
+        loopB={loopB}
+        bookmarks={currentSong ? (state.songBookmarks || {})[currentSong.id] || [] : []}
+        excludedShuffleSongIds={state.excludedShuffleSongIds || []}
         isLiked={currentSong ? state.likedSongIds.includes(currentSong.id) : false}
         isOffline={currentSong ? state.offlineSongIds.includes(currentSong.id) : false}
         accentHex={currentTheme.hex}
@@ -1150,16 +2061,89 @@ export default function App() {
         }}
         onTogglePlay={togglePlay}
         onPrev={handlePrev}
-        onNext={handleNext}
+        onNext={() => handleNext()}
         onSeek={handleSeek}
-        onToggleShuffle={() => setShuffle((s) => !s)}
-        onCycleRepeat={() =>
-          setRepeatMode((m) => (m === 'off' ? 'all' : m === 'all' ? 'one' : 'off'))
-        }
+        onToggleShuffle={() => {
+          hapticToggle();
+          setShuffle((s) => !s);
+        }}
+        onCycleRepeat={() => {
+          hapticToggle();
+          setRepeatMode((m) => (m === 'off' ? 'all' : m === 'all' ? 'one' : 'off'));
+        }}
+        onChangeSpeedMode={(mode) => {
+          setSpeedMode(mode);
+          showToast(
+            mode === 'slowed'
+              ? 'Phonk Slowed (0.85×)'
+              : mode === 'sped'
+              ? 'Sped Up (1.15×)'
+              : 'Normal Speed (1.0×)'
+          );
+        }}
+        onChangeEqPreset={(preset) => {
+          setEqPreset(preset);
+          showToast(
+            preset === 'sub-bass'
+              ? 'EQ: Phonk Sub-Bass'
+              : preset === 'vocal-crisp'
+              ? 'EQ: Vocal Crisp'
+              : 'EQ: Flat'
+          );
+        }}
+        onChangeCrossfade={(sec) => {
+          setState((prev) => ({ ...prev, crossfadeSeconds: sec }));
+        }}
+        onSelectSleepTimer={(mode) => {
+          setSleepTimerMode(mode);
+          showToast(
+            mode === 'off'
+              ? 'Sleep timer off'
+              : mode === 'end-of-track'
+              ? 'Stopping at end of track'
+              : `Sleep timer set for ${mode}`
+          );
+        }}
+        onSetLoopA={(t) => {
+          hapticToggle();
+          setLoopA(t);
+          if (t === null) setLoopB(null);
+        }}
+        onSetLoopB={(t) => {
+          hapticToggle();
+          setLoopB(t);
+        }}
+        onAddBookmark={handleAddBookmark}
+        onDeleteBookmark={handleDeleteBookmark}
+        onSaveClipToBeats={handleSaveClipToBeats}
+        onSelectQueueSong={(qSong) => playSong(qSong, queue)}
+        onMoveQueueItem={handleMoveQueueItem}
+        onRemoveQueueItem={handleRemoveQueueItem}
+        onToggleExcludeShuffle={handleToggleExcludeShuffle}
         onToggleLike={toggleLike}
         onOpenAddToPlaylist={(song) => setPlaylistPickerSong(song)}
         onToggleOffline={toggleOffline}
         onShare={handleShareSong}
+      />
+
+      {/* Year-Round Live ZORB Wrapped Modal */}
+      <LiveWrappedModal
+        isOpen={wrappedOpen}
+        profile={state.profile}
+        songs={allSongs}
+        history={state.history}
+        songPlayCounts={state.songPlayCounts || {}}
+        listeningHours={state.listeningHours || {}}
+        totalListenSeconds={state.totalListenSeconds}
+        dopamineScore={state.dopamineScore}
+        streak={state.streak}
+        accentHex={currentTheme.hex}
+        onPlaySong={(song) => {
+          setWrappedOpen(false);
+          playSong(song, allSongs);
+          setFullPlayerOpen(true);
+        }}
+        onClose={() => setWrappedOpen(false)}
       />
 
       {/* Add to Playlist Modal */}
@@ -1191,8 +2175,75 @@ export default function App() {
       <ImportSongModal
         isOpen={importSongOpen}
         accentHex={currentTheme.hex}
+        usedSlots={usedImportSlots}
+        maxSlots={maxImportSlots}
+        isUnlimited={isUnlimitedImports}
+        canExpandMoreSpace={canExpandMoreSpace}
+        onAddMoreSpace={handleAddMoreSpace}
         onClose={() => setImportSongOpen(false)}
         onImported={handleImportedSong}
+      />
+
+      {/* Auto Music Scan Prompt ("Allow ZORB to find your music") */}
+      <MusicScanModal
+        isOpen={musicScanOpen}
+        accentHex={currentTheme.hex}
+        usedSlots={usedImportSlots}
+        maxSlots={maxImportSlots}
+        isUnlimited={isUnlimitedImports}
+        canExpandMoreSpace={canExpandMoreSpace}
+        onAddMoreSpace={handleAddMoreSpace}
+        onScanFiles={handleScanFiles}
+        onOpenManualImport={() => setImportSongOpen(true)}
+        onClose={() => setMusicScanOpen(false)}
+      />
+
+      {/* Offline Mode Gate & Reconnect Skipped-Ad Modal */}
+      <OfflineGateModal
+        isOpen={Boolean(offlineGateMode)}
+        mode={offlineGateMode || 'offline-prompt'}
+        carryOnCount={state.offlineCarryOnCount || 0}
+        accentHex={currentTheme.hex}
+        onWatchAdNow={() => {
+          setOfflineGateMode(null);
+          setOfflineAdPlayerOpen(true);
+        }}
+        onCarryOnLater={() => {
+          dismissedOfflinePromptRef.current = true;
+          setOfflineGateMode(null);
+          setState((prev) => ({
+            ...prev,
+            offlineCarryOnCount: (prev.offlineCarryOnCount || 0) + 1,
+            pendingSkippedAd: true,
+          }));
+          showToast('Carry On enabled — Watch Ad when online');
+        }}
+      />
+
+      {/* 15s Demo Video Ad Player for 6-Hour Offline Unlock */}
+      <DemoAdPlayerModal
+        isOpen={offlineAdPlayerOpen}
+        placement="offline_unlock_6h"
+        accentHex={currentTheme.hex}
+        onRewardCompleted={() => {
+          hapticMilestone();
+          setOfflineAdPlayerOpen(false);
+          setOfflineGateMode(null);
+          dismissedOfflinePromptRef.current = false;
+          setNowMs(Date.now());
+          setState((prev) => ({
+            ...prev,
+            offlineUnlockedUntil: Date.now() + OFFLINE_AD_UNLOCK_MS,
+            offlineCarryOnCount: 0,
+            pendingSkippedAd: false,
+          }));
+          showToast('6 Hours Offline Mode Unlocked!');
+        }}
+        onCancel={
+          offlineGateMode === 'forced-reconnect-ad' || state.pendingSkippedAd
+            ? undefined
+            : () => setOfflineAdPlayerOpen(false)
+        }
       />
 
       {/* Offline Full-Screen Ad Interstitial Modal (After every 6 Songs) */}
