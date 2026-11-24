@@ -9,6 +9,7 @@ import {
   Check,
   Coins,
   Crown,
+  Download,
   Eye,
   EyeOff,
   Flame,
@@ -29,6 +30,7 @@ import { ALL_MUSIC_PREFERENCES } from '../data/songs';
 import { THEME_OPTIONS } from '../data/themes';
 import { getUserRank } from '../utils/storage';
 import { hapticError, hapticMilestone } from '../utils/haptics';
+import { usePWAInstall } from '../hooks/usePWAInstall';
 import { MusicPreference, Playlist, StreakState, UserProfile } from '../types/zorb';
 import { AvatarCropperModal } from './AvatarCropperModal';
 
@@ -121,6 +123,8 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
   const [devPasswordInput, setDevPasswordInput] = useState('');
   const [devPasswordError, setDevPasswordError] = useState('');
   const [showDevPassword, setShowDevPassword] = useState(false);
+  const { isInstallable, isInstalled, isIOS, install } = usePWAInstall();
+  const [showIosInstallTip, setShowIosInstallTip] = useState(false);
 
   const totalHours = (totalListenSeconds / 3600).toFixed(2);
   const currentRank = getUserRank(streak.currentStreak, dopamineScore);
@@ -585,6 +589,52 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
             {hapticsEnabled ? 'Haptics On' : 'Off'}
           </button>
         </div>
+
+        {/* Install ZORB App (Standalone PWA with ZORB Icon for System Notifications) */}
+        {!isInstalled && (isInstallable || isIOS) && (
+          <div className="border-t border-white/10 pt-4 flex flex-col gap-2">
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <img
+                  src="/zorb-icon.svg"
+                  alt="ZORB"
+                  className="w-10 h-10 rounded-xl border border-white/15 shrink-0"
+                />
+                <div>
+                  <p className="text-sm font-semibold text-white">Install ZORB App</p>
+                  <p className="text-xs text-zinc-400">
+                    Use ZORB app icon on media notifications &amp; lock screen
+                  </p>
+                </div>
+              </div>
+
+              {isInstallable ? (
+                <button
+                  type="button"
+                  onClick={() => install()}
+                  className="h-10 px-4 rounded-xl text-xs font-bold text-black inline-flex items-center gap-1.5 cursor-pointer shrink-0"
+                  style={{ backgroundColor: accentHex }}
+                >
+                  <Download className="w-3.5 h-3.5" /> Install
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setShowIosInstallTip((v) => !v)}
+                  className="h-10 px-4 rounded-xl bg-white/10 hover:bg-white/15 text-xs font-semibold text-white cursor-pointer shrink-0"
+                >
+                  Add Icon
+                </button>
+              )}
+            </div>
+            {showIosInstallTip && isIOS && (
+              <p className="text-xs text-zinc-400 bg-black rounded-xl border border-white/10 px-3 py-2">
+                Tap Safari&apos;s <strong className="text-white">Share</strong> icon, then choose{' '}
+                <strong className="text-white">Add to Home Screen</strong> to install ZORB.
+              </p>
+            )}
+          </div>
+        )}
 
         {/* Remove Ads — ZORB Premium (Offline Placeholder) */}
         <div className="border-t border-white/10 pt-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">

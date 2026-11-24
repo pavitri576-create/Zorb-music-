@@ -1,9 +1,16 @@
-const APP_CACHE = 'zorb-shell-v1';
+const APP_CACHE = 'zorb-shell-v2';
 const AUDIO_CACHE = 'zorb-offline-audio-v1';
 
 const PRECACHE_URLS = [
   '/',
   '/index.html',
+  '/manifest.webmanifest',
+  '/zorb-icon.svg',
+  '/pwa-192x192.png',
+  '/pwa-512x512.png',
+  '/pwa-maskable-512x512.png',
+  '/apple-touch-icon.png',
+  '/zorb-badge-96x96.png',
   '/songs/neon-blade.mp3',
   '/songs/close-eyes.mp3',
   '/songs/rave.mp3',
@@ -45,6 +52,23 @@ self.addEventListener('activate', (event) => {
     )
   );
   self.clients.claim();
+});
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const action = event.action;
+
+  event.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
+      if (action && clientList.length > 0) {
+        clientList[0].postMessage({ type: 'ZORB_MEDIA_ACTION', action });
+      }
+      if (clientList.length > 0) {
+        return clientList[0].focus();
+      }
+      return self.clients.openWindow('/');
+    })
+  );
 });
 
 self.addEventListener('fetch', (event) => {

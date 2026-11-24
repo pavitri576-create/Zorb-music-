@@ -57,6 +57,10 @@ import {
   hapticToggle,
   setHapticsEnabled,
 } from './utils/haptics';
+import {
+  updateMediaSessionMetadata,
+  updateMediaSessionPositionAndState,
+} from './utils/mediaNotification';
 import { SplashScreen } from './components/SplashScreen';
 import { OnboardingFlow } from './components/OnboardingFlow';
 import { ProfileSetup } from './components/ProfileSetup';
@@ -289,16 +293,16 @@ export default function App() {
     document.documentElement.style.setProperty('--zorb-accent-rgb', currentTheme.rgb);
   }, [currentTheme]);
 
-  // Listen to visibilitychange to surface top system mini-player bar when minimized/backgrounded
+  // Listen to visibilitychange to surface top Live Pill mini-player when minimized/backgrounded
   useEffect(() => {
     const onVisibility = () => {
-      if (document.hidden && currentSong && isPlaying) {
+      if (document.hidden && currentSong) {
         setShowSystemBar(true);
       }
     };
     document.addEventListener('visibilitychange', onVisibility);
     return () => document.removeEventListener('visibilitychange', onVisibility);
-  }, [currentSong, isPlaying]);
+  }, [currentSong]);
 
   // Log play history helper (strictly last 5 unique songs, newest first) + play counts for Live Wrapped
   const recordHistory = useCallback((songId: string) => {
@@ -619,59 +623,122 @@ export default function App() {
     [showToast]
   );
 
-  // Sync MediaSession API for OS / browser lock-screen & notification bar background controls
+  const mediaActionsRef = useRef({
+    play: () => {
+      const audio = audioRef.current;
+      if (!audio) return;
+      if (audio.paused) {
+        hapticToggle();
+        audio.play().then(() => setIsPlaying(true)).catch(() => setIsPlaying(false));
+      }
+    },
+    pause: () => {
+      const audio = audioRef.current;
+      if (!audio) return;
+      if (!audio.paused) {
+        hapticToggle();
+        audio.pause();
+        setIsPlaying(false);
+      }
+    },
+    prev: () => handlePrev(),
+    next: () => handleNext(),
+    seek: (time: number) => handleSeek(time),
+  });
+
   useEffect(() => {
-    if (!('mediaSession' in navigator) || !currentSong) return;
+    mediaActionsRef.current = {
+      play: () => {
+        const audio = audioRef.current;
+        if (!audio) {
+          togglePlay();
+          return;
+        }
+        if (!audio.src && currentSong) {
+          audio.src = currentSong.audioUrl;
+        }
+        if (audio.paused) {
+          hapticToggle();
+          audio.play().then(() => setIsPlaying(true)).catch(() => setIsPlaying(false));
+        }
+      },
+      pause: () => {
+        const audio = audioRef.current;
+        if (!audio) return;
+        if (!audio.paused) {
+          hapticToggle();
+          audio.pause();
+          setIsPlaying(false);
+        }
+      },
+      prev: () => handlePrev(),
+      next: () => handleNext(),
+      seek: (time: number) => handleSeek(time),
+    };
+  }, [currentSong, togglePlay, handlePrev, handleNext, handleSeek]);
+
+  // Register MediaSession action handlers once (no flicker on playback ticks)
+  useEffect(() => {
+    if (!('mediaSession' in navigator)) return;
     try {
-      navigator.mediaSession.metadata = new MediaMetadata({
-        title: currentSong.title,
-        artist: currentSong.artist,
-        album: 'ZORB — Z = M × D²',
-        artwork: [{ src: currentSong.cover, sizes: '512x512', type: 'image/jpeg' }],
-      });
-      navigator.mediaSession.playbackState = isPlaying ? 'playing' : 'paused';
-      navigator.mediaSession.setActionHandler('play', () => togglePlay());
-      navigator.mediaSession.setActionHandler('pause', () => togglePlay());
-      navigator.mediaSession.setActionHandler('previoustrack', () => handlePrev());
-      navigator.mediaSession.setActionHandler('nexttrack', () => handleNext());
+      navigator.mediaSession.setActionHandler('play', () => mediaActionsRef.current.play());
+      navigator.mediaSession.setActionHandler('pause', () => mediaActionsRef.current.pause());
+      navigator.mediaSession.setActionHandler('stop', () => mediaActionsRef.current.pause());
+      navigator.mediaSession.setActionHandler('previoustrack', () => mediaActionsRef.current.prev());
+      navigator.mediaSession.setActionHandler('nexttrack', () => mediaActionsRef.current.next());
       navigator.mediaSession.setActionHandler('seekto', (details) => {
-        if (typeof details.seekTime === 'number') handleSeek(details.seekTime);
+        if (typeof details.seekTime === 'number') {
+          mediaActionsRef.current.seek(details.seekTime);
+        }
       });
       navigator.mediaSession.setActionHandler('seekbackward', (details) => {
         const offset = details.seekOffset || 10;
-        if (audioRef.current) handleSeek(Math.max(0, audioRef.current.currentTime - offset));
+        if (audioRef.current) {
+          mediaActionsRef.current.seek(Math.max(0, audioRef.current.currentTime - offset));
+        }
       });
       navigator.mediaSession.setActionHandler('seekforward', (details) => {
         const offset = details.seekOffset || 10;
         if (audioRef.current) {
-          const max = Number.isFinite(audioRef.current.duration) ? audioRef.current.duration : currentTime + offset;
-          handleSeek(Math.min(max, audioRef.current.currentTime + offset));
+          const max = Number.isFinite(audioRef.current.duration)
+            ? audioRef.current.duration
+            : audioRef.current.currentTime + offset;
+          mediaActionsRef.current.seek(Math.min(max, audioRef.current.currentTime + offset));
         }
       });
     } catch {
       // Ignore unsupported MediaSession actions
     }
-  }, [currentSong, isPlaying, togglePlay, handlePrev, handleNext, handleSeek, currentTime]);
+  }, []);
 
+  // Update MediaSession metadata cleanly only when track changes (512x512 raster artwork)
   useEffect(() => {
-    if (!('mediaSession' in navigator) || !currentSong) return;
-    try {
-      navigator.mediaSession.playbackState = isPlaying ? 'playing' : 'paused';
-      if (
-        typeof navigator.mediaSession.setPositionState === 'function' &&
-        duration > 0 &&
-        Number.isFinite(duration)
-      ) {
-        navigator.mediaSession.setPositionState({
-          duration,
-          playbackRate: 1,
-          position: Math.min(duration, Math.max(0, currentTime)),
-        });
-      }
-    } catch {
-      // Ignore unsupported setPositionState
-    }
-  }, [currentSong, isPlaying, currentTime, duration]);
+    if (!currentSong) return;
+    updateMediaSessionMetadata(currentSong);
+  }, [currentSong?.id, currentSong?.title, currentSong?.artist, currentSong?.cover]);
+
+  // Sync MediaSession Play/Pause state & Seek Bar progress cleanly
+  const wholeSecondTime = Math.floor(currentTime);
+  useEffect(() => {
+    if (!currentSong) return;
+    const rate = speedMode === 'slowed' ? 0.85 : speedMode === 'sped' ? 1.15 : 1;
+    updateMediaSessionPositionAndState(isPlaying, duration, wholeSecondTime, rate);
+  }, [currentSong, isPlaying, duration, wholeSecondTime, speedMode]);
+
+  // Listen to Service Worker media notification button actions when sent back
+  useEffect(() => {
+    if (!('serviceWorker' in navigator)) return;
+    const onSwMessage = (event: MessageEvent) => {
+      const data = event.data as { type?: string; action?: string } | null;
+      if (!data || data.type !== 'ZORB_MEDIA_ACTION') return;
+      if (data.action === 'play') mediaActionsRef.current.play();
+      else if (data.action === 'pause') mediaActionsRef.current.pause();
+      else if (data.action === 'prev') mediaActionsRef.current.prev();
+      else if (data.action === 'next') mediaActionsRef.current.next();
+    };
+    navigator.serviceWorker.addEventListener('message', onSwMessage);
+    return () => navigator.serviceWorker.removeEventListener('message', onSwMessage);
+  }, []);
 
   // Sync Phonk Playback Speed & EQ Preset to <audio> element
   useEffect(() => {
@@ -1572,18 +1639,21 @@ export default function App() {
         }}
       />
 
-      {/* Top System Mini-Player Notification Bar (when minimized / backgrounded) */}
+      {/* Top Live Pill / Dynamic Island Mini-Player (when minimized / backgrounded) */}
       <AnimatePresence>
         {showSystemBar && currentSong && (
           <SystemMiniPlayerBar
             song={currentSong}
             isPlaying={isPlaying}
+            currentTime={currentTime}
+            duration={duration}
             accentHex={currentTheme.hex}
             onOpenFull={() => {
               setShowSystemBar(false);
               setFullPlayerOpen(true);
             }}
             onTogglePlay={togglePlay}
+            onPrev={handlePrev}
             onNext={() => handleNext()}
             onDismiss={() => setShowSystemBar(false)}
           />

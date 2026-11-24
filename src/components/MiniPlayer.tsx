@@ -130,9 +130,12 @@ export const MiniPlayer: React.FC<MiniPlayerProps> = ({
 interface SystemMiniPlayerBarProps {
   song: Song;
   isPlaying: boolean;
+  currentTime?: number;
+  duration?: number;
   accentHex: string;
   onOpenFull: () => void;
   onTogglePlay: () => void;
+  onPrev?: () => void;
   onNext: () => void;
   onDismiss: () => void;
 }
@@ -140,78 +143,123 @@ interface SystemMiniPlayerBarProps {
 export const SystemMiniPlayerBar: React.FC<SystemMiniPlayerBarProps> = ({
   song,
   isPlaying,
+  currentTime = 0,
+  duration = 0,
   accentHex,
   onOpenFull,
   onTogglePlay,
+  onPrev,
   onNext,
   onDismiss,
-}) => (
-  <motion.div
-    initial={{ y: -60, opacity: 0 }}
-    animate={{ y: 0, opacity: 1 }}
-    exit={{ y: -60, opacity: 0 }}
-    transition={{ duration: 0.25 }}
-    className="fixed top-2 left-1/2 -translate-x-1/2 z-50 w-[calc(100%-1.5rem)] max-w-md rounded-2xl bg-[#121212]/95 backdrop-blur-xl border px-3.5 py-2.5 flex items-center justify-between gap-3 shadow-2xl"
-    style={{
-      borderColor: accentHex,
-      boxShadow: `0 8px 30px rgba(var(--zorb-accent-rgb), 0.25)`,
-    }}
-  >
-    <button
-      type="button"
-      onClick={onOpenFull}
-      className="flex items-center gap-2.5 min-w-0 flex-1 text-left cursor-pointer"
-    >
-      <img
-        src={song.cover}
-        alt={song.title}
-        referrerPolicy="no-referrer"
-        className="w-9 h-9 rounded-lg object-cover shrink-0"
-      />
-      <div className="min-w-0">
-        <p className="text-[10px] font-mono-tabular uppercase tracking-wider" style={{ color: accentHex }}>
-          ZORB Notification Player
-        </p>
-        <p className="text-xs font-bold text-white truncate">
-          {song.title} · <span className="font-normal text-[#B3B3B3]">{song.artist}</span>
-        </p>
-      </div>
-    </button>
+}) => {
+  const safeDuration = duration > 0 ? duration : song.duration || 65;
+  const pct = Math.min(100, Math.max(0, (currentTime / safeDuration) * 100));
 
-    <div className="flex items-center gap-1 shrink-0">
-      <button
-        type="button"
-        onClick={onTogglePlay}
-        className="w-9 h-9 rounded-lg flex items-center justify-center text-black cursor-pointer"
-        style={{ backgroundColor: accentHex }}
-        aria-label={isPlaying ? 'Pause' : 'Play'}
-      >
-        {isPlaying ? <Pause className="w-4 h-4 fill-current" /> : <Play className="w-4 h-4 fill-current" />}
-      </button>
-      <button
-        type="button"
-        onClick={onNext}
-        className="w-9 h-9 rounded-lg bg-white/5 hover:bg-white/10 flex items-center justify-center text-white cursor-pointer"
-        aria-label="Next track"
-      >
-        <SkipForward className="w-4 h-4" />
-      </button>
-      <button
-        type="button"
-        onClick={onOpenFull}
-        className="w-9 h-9 rounded-lg bg-white/5 hover:bg-white/10 flex items-center justify-center text-zinc-300 cursor-pointer"
-        aria-label="Expand player"
-      >
-        <Maximize2 className="w-3.5 h-3.5" />
-      </button>
-      <button
-        type="button"
-        onClick={onDismiss}
-        className="w-8 h-9 rounded-lg hover:bg-white/10 flex items-center justify-center text-zinc-400 cursor-pointer"
-        aria-label="Dismiss notification bar"
-      >
-        <X className="w-4 h-4" />
-      </button>
-    </div>
-  </motion.div>
-);
+  return (
+    <motion.div
+      initial={{ y: -64, opacity: 0, scale: 0.94 }}
+      animate={{ y: 0, opacity: 1, scale: 1 }}
+      exit={{ y: -64, opacity: 0, scale: 0.94 }}
+      transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }}
+      className="fixed top-2.5 left-1/2 -translate-x-1/2 z-50 w-[calc(100%-1rem)] max-w-md rounded-full bg-[#070709]/95 backdrop-blur-xl border overflow-hidden shadow-2xl"
+      style={{
+        borderColor: accentHex,
+        boxShadow: `0 10px 32px rgba(0, 0, 0, 0.85), 0 0 22px rgba(var(--zorb-accent-rgb), 0.28)`,
+      }}
+    >
+      <div className="px-2.5 py-2 flex items-center justify-between gap-2">
+        <button
+          type="button"
+          onClick={onOpenFull}
+          className="flex items-center gap-2.5 min-w-0 flex-1 text-left cursor-pointer"
+        >
+          {/* Cover art + ZORB app icon badge */}
+          <div className="relative shrink-0">
+            <img
+              src={song.cover}
+              alt={song.title}
+              referrerPolicy="no-referrer"
+              className="w-10 h-10 rounded-full object-cover border border-white/15"
+            />
+            <img
+              src="/zorb-icon.svg"
+              alt="ZORB"
+              className="w-4 h-4 rounded-[5px] absolute -bottom-0.5 -right-0.5 border border-black shadow-md"
+            />
+          </div>
+
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-1.5">
+              <span
+                className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 ${
+                  isPlaying ? 'animate-pulse' : 'opacity-40'
+                }`}
+                style={{ backgroundColor: accentHex }}
+              />
+              <p className="text-xs font-bold text-white truncate leading-tight">
+                {song.title}
+              </p>
+            </div>
+            <p className="text-[11px] text-[#B3B3B3] truncate mt-0.5 leading-tight">
+              {song.artist}
+            </p>
+          </div>
+        </button>
+
+        <div className="flex items-center gap-1 shrink-0">
+          {onPrev && (
+            <button
+              type="button"
+              onClick={onPrev}
+              className="w-8 h-8 rounded-full bg-white/5 hover:bg-white/10 flex items-center justify-center text-white active:scale-90 transition-transform cursor-pointer"
+              aria-label="Previous track"
+            >
+              <SkipForward className="w-3.5 h-3.5 rotate-180" />
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={onTogglePlay}
+            className="w-9 h-9 rounded-full flex items-center justify-center text-black active:scale-90 transition-transform cursor-pointer"
+            style={{ backgroundColor: accentHex }}
+            aria-label={isPlaying ? 'Pause' : 'Play'}
+          >
+            {isPlaying ? <Pause className="w-4 h-4 fill-current" /> : <Play className="w-4 h-4 fill-current translate-x-0.5" />}
+          </button>
+          <button
+            type="button"
+            onClick={onNext}
+            className="w-8 h-8 rounded-full bg-white/5 hover:bg-white/10 flex items-center justify-center text-white active:scale-90 transition-transform cursor-pointer"
+            aria-label="Next track"
+          >
+            <SkipForward className="w-3.5 h-3.5" />
+          </button>
+          <button
+            type="button"
+            onClick={onOpenFull}
+            className="hidden sm:flex w-8 h-8 rounded-full bg-white/5 hover:bg-white/10 items-center justify-center text-zinc-300 cursor-pointer"
+            aria-label="Expand player"
+          >
+            <Maximize2 className="w-3.5 h-3.5" />
+          </button>
+          <button
+            type="button"
+            onClick={onDismiss}
+            className="w-7 h-8 rounded-full hover:bg-white/10 flex items-center justify-center text-zinc-400 cursor-pointer"
+            aria-label="Dismiss live pill"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      </div>
+
+      {/* Live Progress Hairline */}
+      <div className="h-[2px] w-full bg-white/10">
+        <div
+          className="h-full transition-[width] duration-200"
+          style={{ width: `${pct}%`, backgroundColor: accentHex }}
+        />
+      </div>
+    </motion.div>
+  );
+};
